@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<!-- Talking to the portal, and to Cloud Storage for the signed upload URL. -->
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<!-- Shared with the extension: non-secret settings (the portal address) and the enumeration
+	     snapshots the change diff is computed against. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.uk.co.helmsley.HelmsleyDrive</string>
+	</array>
+	<!-- Where the OAuth token set lives, so the extension can spend and rotate it. The prefix is
+	     the team id; Configuration.keychainAccessGroup must spell out the same expansion. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)uk.co.helmsley.HelmsleyDrive</string>
+	</array>
+</dict>
+</plist>

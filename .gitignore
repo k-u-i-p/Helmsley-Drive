@@ -1,0 +1,11 @@
+# Xcode per-user state. The project file and the shared scheme are tracked; window positions,
+# breakpoints and the local scheme ordering are not.
+xcuserdata/
+*.xcuserstate
+DerivedData/
+build/
+
+.DS_Store
+
+# Local tooling state, not project configuration.
+.claude/
