@@ -15,10 +15,15 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     let documentSize: NSNumber?
     let itemVersion: NSFileProviderItemVersion
 
+    #if os(macOS)
     /// Nothing is downloaded until something opens it, and the system may reclaim the bytes of
     /// anything nobody has opened lately. The portal holds tens of gigabytes across every client;
     /// materialising that on a laptop because a folder was glanced at would be indefensible.
+    ///
+    /// macOS only, because only macOS offers the choice: on iOS the Files app is lazy already, and
+    /// `.downloadLazily` is not a case the platform declares.
     var contentPolicy: NSFileProviderContentPolicy { .downloadLazily }
+    #endif
 
     private init(
         identity: ItemIdentity,

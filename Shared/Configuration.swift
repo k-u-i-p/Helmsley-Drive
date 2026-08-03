@@ -43,18 +43,49 @@ enum Configuration {
     /// in, with nothing on screen pointing at the team id. Asking the binary what it was actually
     /// signed with cannot be wrong.
     static let keychainAccessGroup: String = {
-        let declared = "uk.co.helmsley.HelmsleyDrive"
-        guard let task = SecTaskCreateFromSelf(nil),
-              let groups = SecTaskCopyValueForEntitlement(task, "keychain-access-groups" as CFString, nil) as? [String],
-              // The entitlement may list several; ours is the one ending in the group we declared.
-              let group = groups.first(where: { $0.hasSuffix(".\(declared)") }) ?? groups.first
-        else {
-            // Unsigned, or signed without the entitlement — the keychain will refuse either way, so
-            // this only decides which access group appears in the error.
-            return declared
+        #if os(macOS)
+        // SecTask reads the running binary's entitlements straight back. iOS has no such API.
+        if let task = SecTaskCreateFromSelf(nil),
+           let groups = SecTaskCopyValueForEntitlement(task, "keychain-access-groups" as CFString, nil) as? [String],
+           // The entitlement may list several; ours is the one ending in the group we declared.
+           let group = groups.first(where: { $0.hasSuffix(".\(declaredKeychainGroup)") }) ?? groups.first {
+            return group
         }
-        return group
+        #else
+        if let group = probedKeychainAccessGroup() { return group }
+        #endif
+        // Unsigned, or signed without the entitlement — the keychain will refuse either way, so
+        // this only decides which access group appears in the error.
+        return declaredKeychainGroup
     }()
+
+    private static let declaredKeychainGroup = "uk.co.helmsley.HelmsleyDrive"
+
+    #if !os(macOS)
+    /// The prefix, asked of the keychain itself.
+    ///
+    /// An item added without naming an access group lands in the *first* group the entitlement
+    /// lists, and reports back which one that was. Ours lists exactly one, so a throwaway item is a
+    /// reliable way to learn the team prefix on a platform that will not simply say.
+    private static func probedKeychainAccessGroup() -> String? {
+        let identity: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: "access-group-probe",
+        ]
+        // Any leftover from a previous launch would make the add fail as a duplicate.
+        SecItemDelete(identity as CFDictionary)
+        defer { SecItemDelete(identity as CFDictionary) }
+
+        var created: CFTypeRef?
+        var insert = identity
+        insert[kSecValueData as String] = Data()
+        insert[kSecReturnAttributes as String] = true
+        guard SecItemAdd(insert as CFDictionary, &created) == errSecSuccess,
+              let attributes = created as? [String: Any] else { return nil }
+        return attributes[kSecAttrAccessGroup as String] as? String
+    }
+    #endif
 
     /// Service name of the keychain item holding the token set.
     static let keychainService = "uk.co.helmsley.HelmsleyDrive.oauth"

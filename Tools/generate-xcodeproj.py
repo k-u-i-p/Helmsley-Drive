@@ -1,8 +1,13 @@
 #!/usr/bin/env python3
 """Emit HelmsleyDrive.xcodeproj/project.pbxproj.
 
-Hand-writing a pbxproj is error-prone mostly because every object cross-references every other by
-a 24-hex-digit id; generating it means those ids are allocated once and referenced by name.
+Hand-writing a pbxproj is error-prone mostly because every object cross-references every other by a
+24-hex-digit id; generating it means those ids are allocated once and referenced by name.
+
+Four targets, two platforms. The engine — Shared/ and FileProvider/ — is compiled into all of them
+rather than shared through a framework: a file provider extension and its host app already have to
+embed their code, and a framework would add an embedding step and a dylib to sign for no gain at
+this size.
 """
 import os
 
@@ -22,12 +27,73 @@ def oid(name):
     return _ids[name]
 
 
-SHARED = ["Configuration.swift", "Log.swift", "TokenStore.swift", "OAuth.swift", "HelmsleyAPI.swift", "ItemIdentity.swift"]
-APP = ["HelmsleyDriveApp.swift", "ContentView.swift", "AppModel.swift", "SignIn.swift"]
-EXT = ["FileProviderExtension.swift", "FileProviderItem.swift", "FolderEnumerator.swift", "SnapshotStore.swift"]
+# --- what goes where -----------------------------------------------------------------------------
 
-APP_TARGET = "HelmsleyDrive"
-EXT_TARGET = "HelmsleyFileProvider"
+# The engine, compiled into all four targets.
+SHARED = ["Configuration.swift", "Log.swift", "TokenStore.swift", "OAuth.swift", "HelmsleyAPI.swift",
+          "ItemIdentity.swift"]
+# The container apps' shared logic, compiled into the two app targets only. Not the extensions':
+# signing in is interactive, and `UIApplication.shared` — which presents the sheet — is barred
+# outright in an iOS app extension.
+APP_SHARED = ["AppModel.swift", "SignIn.swift"]
+ENGINE = ["FileProviderExtension.swift", "FileProviderItem.swift", "FolderEnumerator.swift", "SnapshotStore.swift"]
+MAC_UI = ["HelmsleyDriveApp.swift", "ContentView.swift"]
+IOS_UI = ["HelmsleyDriveApp.swift", "ContentView.swift"]
+
+APP_BUNDLE_ID = "uk.co.helmsley.HelmsleyDrive"
+EXT_BUNDLE_ID = "uk.co.helmsley.HelmsleyDrive.FileProvider"
+
+# One App ID per platform pair, so both platforms are one app in App Store Connect and one
+# TestFlight build stream.
+TARGETS = [
+    dict(key="mac-app", name="HelmsleyDrive", group="HelmsleyDrive", platform="macos", kind="app",
+         sources=SHARED + APP_SHARED + MAC_UI, embeds="mac-ext",
+         info="HelmsleyDrive/Info.plist", entitlements="HelmsleyDrive/HelmsleyDrive.entitlements",
+         bundle_id=APP_BUNDLE_ID),
+    dict(key="mac-ext", name="HelmsleyFileProvider", group="FileProvider", platform="macos", kind="ext",
+         sources=SHARED + ENGINE,
+         info="FileProvider/Info.plist", entitlements="FileProvider/FileProvider.entitlements",
+         bundle_id=EXT_BUNDLE_ID),
+    dict(key="ios-app", name="HelmsleyDrive-iOS", group="HelmsleyDrive-iOS", platform="ios", kind="app",
+         sources=SHARED + APP_SHARED + IOS_UI, embeds="ios-ext",
+         info="HelmsleyDrive-iOS/Info.plist", entitlements="HelmsleyDrive-iOS/HelmsleyDrive-iOS.entitlements",
+         bundle_id=APP_BUNDLE_ID),
+    dict(key="ios-ext", name="HelmsleyFileProvider-iOS", group="FileProvider-iOS", platform="ios", kind="ext",
+         sources=SHARED + ENGINE,
+         info="FileProvider-iOS/Info.plist", entitlements="FileProvider-iOS/FileProvider-iOS.entitlements",
+         bundle_id=EXT_BUNDLE_ID),
+]
+BY_KEY = {t["key"]: t for t in TARGETS}
+
+# Which group each source file's reference lives in — one reference per file, however many targets
+# compile it.
+GROUP_OF = {}
+for f in SHARED:
+    GROUP_OF[f] = "Shared"
+for f in APP_SHARED:
+    GROUP_OF[f] = "AppShared"
+for f in ENGINE:
+    GROUP_OF[f] = "FileProvider"
+
+GROUPS = ["Shared", "AppShared", "HelmsleyDrive", "FileProvider", "HelmsleyDrive-iOS", "FileProvider-iOS"]
+GROUP_FILES = {
+    "Shared": list(SHARED),
+    "AppShared": list(APP_SHARED),
+    "HelmsleyDrive": MAC_UI + ["Assets.xcassets", "Info.plist", "HelmsleyDrive.entitlements"],
+    "FileProvider": ENGINE + ["Assets.xcassets", "Info.plist", "FileProvider.entitlements"],
+    "HelmsleyDrive-iOS": IOS_UI + ["Assets.xcassets", "Info.plist", "HelmsleyDrive-iOS.entitlements"],
+    "FileProvider-iOS": ["Assets.xcassets", "Info.plist", "FileProvider-iOS.entitlements"],
+}
+
+PRODUCT_EXT = {"app": ".app", "ext": ".appex"}
+PRODUCT_TYPE = {"app": "com.apple.product-type.application", "ext": "com.apple.product-type.app-extension"}
+FILE_TYPE = {"app": "wrapper.application", "ext": '"wrapper.app-extension"'}
+
+
+def source_group(target, filename):
+    """A UI file lives in its own target's group; engine and shared files live in one shared group."""
+    return GROUP_OF.get(filename, target["group"])
+
 
 lines = []
 w = lines.append
@@ -39,81 +105,83 @@ w("\tclasses = {\n\t};")
 w("\tobjectVersion = 56;")
 w("\tobjects = {")
 
-# ---------------------------------------------------------------- PBXBuildFile
+# --- PBXBuildFile --------------------------------------------------------------------------------
 w("\n/* Begin PBXBuildFile section */")
 
 
-def build_file(target, group, filename, phase="Sources"):
-    key = "bf/%s/%s/%s" % (target, group, filename)
+def build_file(target_key, group, filename, phase="Sources"):
+    key = "bf/%s/%s/%s" % (target_key, group, filename)
     w("\t\t%s /* %s in %s */ = {isa = PBXBuildFile; fileRef = %s /* %s */; };"
       % (oid(key), filename, phase, oid("fr/%s/%s" % (group, filename)), filename))
     return oid(key)
 
 
-app_sources = [build_file(APP_TARGET, "Shared", f) for f in SHARED]
-app_sources += [build_file(APP_TARGET, "HelmsleyDrive", f) for f in APP]
-ext_sources = [build_file(EXT_TARGET, "Shared", f) for f in SHARED]
-ext_sources += [build_file(EXT_TARGET, "FileProvider", f) for f in EXT]
+for t in TARGETS:
+    t["source_files"] = [build_file(t["key"], source_group(t, f), f) for f in t["sources"]]
+    # Every target carries the icon: the Dock and Home Screen read the app's, and the Finder
+    # sidebar / Files "Locations" entry for a mounted domain reads the extension's.
+    t["resource_files"] = [build_file(t["key"], t["group"], "Assets.xcassets", "Resources")]
 
-# Both targets carry the icon: the Dock reads the app's, the Finder sidebar entry for a mounted
-# domain reads the extension's. Tools/generate-icon.py builds them from the portal's own mark.
-app_resources = [build_file(APP_TARGET, "HelmsleyDrive", "Assets.xcassets", "Resources")]
-ext_resources = [build_file(EXT_TARGET, "FileProvider", "Assets.xcassets", "Resources")]
-
-w("\t\t%s /* %s.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = %s /* %s.appex */; "
-  "settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };"
-  % (oid("bf/embed"), EXT_TARGET, oid("product/ext"), EXT_TARGET))
+for t in TARGETS:
+    if t.get("embeds"):
+        child = BY_KEY[t["embeds"]]
+        w("\t\t%s /* %s.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = %s /* %s.appex */; "
+          "settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };"
+          % (oid("bf/embed/%s" % t["key"]), child["name"], oid("product/%s" % child["key"]), child["name"]))
 w("/* End PBXBuildFile section */")
 
-# ------------------------------------------------------- PBXCopyFilesBuildPhase
+# --- PBXCopyFilesBuildPhase ----------------------------------------------------------------------
 w("\n/* Begin PBXCopyFilesBuildPhase section */")
-w("\t\t%s /* Embed Foundation Extensions */ = {" % oid("phase/embed"))
-w("\t\t\tisa = PBXCopyFilesBuildPhase;")
-w("\t\t\tbuildActionMask = 2147483647;")
-w('\t\t\tdstPath = "";')
-w("\t\t\tdstSubfolderSpec = 13;")
-w("\t\t\tfiles = (")
-w("\t\t\t\t%s /* %s.appex in Embed Foundation Extensions */," % (oid("bf/embed"), EXT_TARGET))
-w("\t\t\t);")
-w('\t\t\tname = "Embed Foundation Extensions";')
-w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
-w("\t\t};")
+for t in TARGETS:
+    if not t.get("embeds"):
+        continue
+    child = BY_KEY[t["embeds"]]
+    w("\t\t%s /* Embed Foundation Extensions */ = {" % oid("phase/embed/%s" % t["key"]))
+    w("\t\t\tisa = PBXCopyFilesBuildPhase;")
+    w("\t\t\tbuildActionMask = 2147483647;")
+    w('\t\t\tdstPath = "";')
+    w("\t\t\tdstSubfolderSpec = 13;")
+    w("\t\t\tfiles = (")
+    w("\t\t\t\t%s /* %s.appex in Embed Foundation Extensions */," % (oid("bf/embed/%s" % t["key"]), child["name"]))
+    w("\t\t\t);")
+    w('\t\t\tname = "Embed Foundation Extensions";')
+    w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
+    w("\t\t};")
 w("/* End PBXCopyFilesBuildPhase section */")
 
-# ----------------------------------------------------------- PBXFileReference
+# --- PBXFileReference ----------------------------------------------------------------------------
 w("\n/* Begin PBXFileReference section */")
 
+FILE_KINDS = {
+    ".swift": "sourcecode.swift",
+    ".plist": "text.plist.xml",
+    ".entitlements": "text.plist.entitlements",
+    ".xcassets": "folder.assetcatalog",
+}
 
-def file_ref(group, filename, path=None, ftype="sourcecode.swift"):
+
+def file_ref(group, filename):
+    ftype = FILE_KINDS[os.path.splitext(filename)[1]]
     w('\t\t%s /* %s */ = {isa = PBXFileReference; lastKnownFileType = %s; path = %s; sourceTree = "<group>"; };'
-      % (oid("fr/%s/%s" % (group, filename)), filename, ftype, path or filename))
+      % (oid("fr/%s/%s" % (group, filename)), filename, ftype, filename))
 
 
-for f in SHARED:
-    file_ref("Shared", f)
-for f in APP:
-    file_ref("HelmsleyDrive", f)
-for f in EXT:
-    file_ref("FileProvider", f)
+for group in GROUPS:
+    for filename in GROUP_FILES[group]:
+        file_ref(group, filename)
 
-file_ref("HelmsleyDrive", "Info.plist", ftype="text.plist.xml")
-file_ref("HelmsleyDrive", "HelmsleyDrive.entitlements", ftype="text.plist.entitlements")
-file_ref("HelmsleyDrive", "Assets.xcassets", ftype="folder.assetcatalog")
-file_ref("FileProvider", "Info.plist", ftype="text.plist.xml")
-file_ref("FileProvider", "FileProvider.entitlements", ftype="text.plist.entitlements")
-file_ref("FileProvider", "Assets.xcassets", ftype="folder.assetcatalog")
-
-w('\t\t%s /* %s.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; '
-  'path = %s.app; sourceTree = BUILT_PRODUCTS_DIR; };' % (oid("product/app"), APP_TARGET, APP_TARGET))
-w('\t\t%s /* %s.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; '
-  'path = %s.appex; sourceTree = BUILT_PRODUCTS_DIR; };' % (oid("product/ext"), EXT_TARGET, EXT_TARGET))
+for t in TARGETS:
+    w('\t\t%s /* %s%s */ = {isa = PBXFileReference; explicitFileType = %s; includeInIndex = 0; '
+      'path = "%s%s"; sourceTree = BUILT_PRODUCTS_DIR; };'
+      % (oid("product/%s" % t["key"]), t["name"], PRODUCT_EXT[t["kind"]], FILE_TYPE[t["kind"]],
+         t["name"], PRODUCT_EXT[t["kind"]]))
 w("/* End PBXFileReference section */")
 
-# ------------------------------------------------------------------- PBXGroup
+# --- PBXGroup ------------------------------------------------------------------------------------
 w("\n/* Begin PBXGroup section */")
 
 
-def group(key, name, children, path=None):
+def group_object(key, name, children, path=None):
     w("\t\t%s /* %s */ = {" % (oid(key), name))
     w("\t\t\tisa = PBXGroup;")
     w("\t\t\tchildren = (")
@@ -123,39 +191,26 @@ def group(key, name, children, path=None):
     # The main group carries neither: it is the project root, and an empty `name = ;` is a syntax
     # error rather than an absent one.
     if path:
-        w("\t\t\tpath = %s;" % path)
+        w('\t\t\tpath = "%s";' % path)
     elif name:
         w("\t\t\tname = %s;" % name)
     w('\t\t\tsourceTree = "<group>";')
     w("\t\t};")
 
 
-group("group/shared", "Shared",
-      [(oid("fr/Shared/%s" % f), f) for f in SHARED], path="Shared")
-group("group/app", "HelmsleyDrive",
-      [(oid("fr/HelmsleyDrive/%s" % f), f) for f in APP]
-      + [(oid("fr/HelmsleyDrive/Assets.xcassets"), "Assets.xcassets"),
-         (oid("fr/HelmsleyDrive/Info.plist"), "Info.plist"),
-         (oid("fr/HelmsleyDrive/HelmsleyDrive.entitlements"), "HelmsleyDrive.entitlements")],
-      path="HelmsleyDrive")
-group("group/ext", "FileProvider",
-      [(oid("fr/FileProvider/%s" % f), f) for f in EXT]
-      + [(oid("fr/FileProvider/Assets.xcassets"), "Assets.xcassets"),
-         (oid("fr/FileProvider/Info.plist"), "Info.plist"),
-         (oid("fr/FileProvider/FileProvider.entitlements"), "FileProvider.entitlements")],
-      path="FileProvider")
-group("group/products", "Products",
-      [(oid("product/app"), "%s.app" % APP_TARGET), (oid("product/ext"), "%s.appex" % EXT_TARGET)])
-group("group/root", "", [(oid("group/shared"), "Shared"),
-                         (oid("group/app"), "HelmsleyDrive"),
-                         (oid("group/ext"), "FileProvider"),
-                         (oid("group/products"), "Products")])
+for group in GROUPS:
+    group_object("group/%s" % group, group,
+                 [(oid("fr/%s/%s" % (group, f)), f) for f in GROUP_FILES[group]], path=group)
+group_object("group/products", "Products",
+             [(oid("product/%s" % t["key"]), t["name"] + PRODUCT_EXT[t["kind"]]) for t in TARGETS])
+group_object("group/root", "",
+             [(oid("group/%s" % g), g) for g in GROUPS] + [(oid("group/products"), "Products")])
 w("/* End PBXGroup section */")
 
-# ------------------------------------------------------- PBXFrameworks/Resources
+# --- build phases --------------------------------------------------------------------------------
 w("\n/* Begin PBXFrameworksBuildPhase section */")
-for key in ("phase/frameworks/app", "phase/frameworks/ext"):
-    w("\t\t%s /* Frameworks */ = {" % oid(key))
+for t in TARGETS:
+    w("\t\t%s /* Frameworks */ = {" % oid("phase/frameworks/%s" % t["key"]))
     w("\t\t\tisa = PBXFrameworksBuildPhase;")
     w("\t\t\tbuildActionMask = 2147483647;")
     w("\t\t\tfiles = (\n\t\t\t);")
@@ -163,148 +218,125 @@ for key in ("phase/frameworks/app", "phase/frameworks/ext"):
     w("\t\t};")
 w("/* End PBXFrameworksBuildPhase section */")
 
-w("\n/* Begin PBXResourcesBuildPhase section */")
-for key, files in (("phase/resources/app", app_resources), ("phase/resources/ext", ext_resources)):
-    w("\t\t%s /* Resources */ = {" % oid(key))
-    w("\t\t\tisa = PBXResourcesBuildPhase;")
-    w("\t\t\tbuildActionMask = 2147483647;")
-    w("\t\t\tfiles = (")
-    for f in files:
-        w("\t\t\t\t%s," % f)
-    w("\t\t\t);")
-    w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
-    w("\t\t};")
-w("/* End PBXResourcesBuildPhase section */")
+for section, phase_key, isa, files_key in (
+    ("PBXResourcesBuildPhase", "phase/resources", "PBXResourcesBuildPhase", "resource_files"),
+    ("PBXSourcesBuildPhase", "phase/sources", "PBXSourcesBuildPhase", "source_files"),
+):
+    w("\n/* Begin %s section */" % section)
+    label = "Resources" if files_key == "resource_files" else "Sources"
+    for t in TARGETS:
+        w("\t\t%s /* %s */ = {" % (oid("%s/%s" % (phase_key, t["key"])), label))
+        w("\t\t\tisa = %s;" % isa)
+        w("\t\t\tbuildActionMask = 2147483647;")
+        w("\t\t\tfiles = (")
+        for f in t[files_key]:
+            w("\t\t\t\t%s," % f)
+        w("\t\t\t);")
+        w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
+        w("\t\t};")
+    w("/* End %s section */" % section)
 
-# ------------------------------------------------------------ PBXSourcesBuildPhase
-w("\n/* Begin PBXSourcesBuildPhase section */")
-for key, files in (("phase/sources/app", app_sources), ("phase/sources/ext", ext_sources)):
-    w("\t\t%s /* Sources */ = {" % oid(key))
-    w("\t\t\tisa = PBXSourcesBuildPhase;")
-    w("\t\t\tbuildActionMask = 2147483647;")
-    w("\t\t\tfiles = (")
-    for f in files:
-        w("\t\t\t\t%s," % f)
-    w("\t\t\t);")
-    w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
-    w("\t\t};")
-w("/* End PBXSourcesBuildPhase section */")
-
-# ------------------------------------------------------------ Target dependency
+# --- dependencies --------------------------------------------------------------------------------
 w("\n/* Begin PBXContainerItemProxy section */")
-w("\t\t%s /* PBXContainerItemProxy */ = {" % oid("proxy/ext"))
-w("\t\t\tisa = PBXContainerItemProxy;")
-w("\t\t\tcontainerPortal = %s /* Project object */;" % oid("project"))
-w("\t\t\tproxyType = 1;")
-w("\t\t\tremoteGlobalIDString = %s;" % oid("target/ext"))
-w("\t\t\tremoteInfo = %s;" % EXT_TARGET)
-w("\t\t};")
+for t in TARGETS:
+    if not t.get("embeds"):
+        continue
+    child = BY_KEY[t["embeds"]]
+    w("\t\t%s /* PBXContainerItemProxy */ = {" % oid("proxy/%s" % t["key"]))
+    w("\t\t\tisa = PBXContainerItemProxy;")
+    w("\t\t\tcontainerPortal = %s /* Project object */;" % oid("project"))
+    w("\t\t\tproxyType = 1;")
+    w("\t\t\tremoteGlobalIDString = %s;" % oid("target/%s" % child["key"]))
+    w('\t\t\tremoteInfo = "%s";' % child["name"])
+    w("\t\t};")
 w("/* End PBXContainerItemProxy section */")
 
 w("\n/* Begin PBXTargetDependency section */")
-w("\t\t%s /* PBXTargetDependency */ = {" % oid("dep/ext"))
-w("\t\t\tisa = PBXTargetDependency;")
-w("\t\t\ttarget = %s /* %s */;" % (oid("target/ext"), EXT_TARGET))
-w("\t\t\ttargetProxy = %s /* PBXContainerItemProxy */;" % oid("proxy/ext"))
-w("\t\t};")
+for t in TARGETS:
+    if not t.get("embeds"):
+        continue
+    child = BY_KEY[t["embeds"]]
+    w("\t\t%s /* PBXTargetDependency */ = {" % oid("dep/%s" % t["key"]))
+    w("\t\t\tisa = PBXTargetDependency;")
+    w('\t\t\ttarget = %s /* %s */;' % (oid("target/%s" % child["key"]), child["name"]))
+    w("\t\t\ttargetProxy = %s /* PBXContainerItemProxy */;" % oid("proxy/%s" % t["key"]))
+    w("\t\t};")
 w("/* End PBXTargetDependency section */")
 
-# ------------------------------------------------------------- PBXNativeTarget
+# --- targets -------------------------------------------------------------------------------------
 w("\n/* Begin PBXNativeTarget section */")
-
-w("\t\t%s /* %s */ = {" % (oid("target/app"), APP_TARGET))
-w("\t\t\tisa = PBXNativeTarget;")
-w('\t\t\tbuildConfigurationList = %s /* Build configuration list for PBXNativeTarget "%s" */;'
-  % (oid("configlist/app"), APP_TARGET))
-w("\t\t\tbuildPhases = (")
-w("\t\t\t\t%s /* Sources */," % oid("phase/sources/app"))
-w("\t\t\t\t%s /* Frameworks */," % oid("phase/frameworks/app"))
-w("\t\t\t\t%s /* Resources */," % oid("phase/resources/app"))
-w("\t\t\t\t%s /* Embed Foundation Extensions */," % oid("phase/embed"))
-w("\t\t\t);")
-w("\t\t\tbuildRules = (\n\t\t\t);")
-w("\t\t\tdependencies = (")
-w("\t\t\t\t%s /* PBXTargetDependency */," % oid("dep/ext"))
-w("\t\t\t);")
-w("\t\t\tname = %s;" % APP_TARGET)
-w("\t\t\tproductName = %s;" % APP_TARGET)
-w("\t\t\tproductReference = %s /* %s.app */;" % (oid("product/app"), APP_TARGET))
-w('\t\t\tproductType = "com.apple.product-type.application";')
-w("\t\t};")
-
-w("\t\t%s /* %s */ = {" % (oid("target/ext"), EXT_TARGET))
-w("\t\t\tisa = PBXNativeTarget;")
-w('\t\t\tbuildConfigurationList = %s /* Build configuration list for PBXNativeTarget "%s" */;'
-  % (oid("configlist/ext"), EXT_TARGET))
-w("\t\t\tbuildPhases = (")
-w("\t\t\t\t%s /* Sources */," % oid("phase/sources/ext"))
-w("\t\t\t\t%s /* Frameworks */," % oid("phase/frameworks/ext"))
-w("\t\t\t\t%s /* Resources */," % oid("phase/resources/ext"))
-w("\t\t\t);")
-w("\t\t\tbuildRules = (\n\t\t\t);")
-w("\t\t\tdependencies = (\n\t\t\t);")
-w("\t\t\tname = %s;" % EXT_TARGET)
-w("\t\t\tproductName = %s;" % EXT_TARGET)
-w("\t\t\tproductReference = %s /* %s.appex */;" % (oid("product/ext"), EXT_TARGET))
-w('\t\t\tproductType = "com.apple.product-type.app-extension";')
-w("\t\t};")
+for t in TARGETS:
+    w('\t\t%s /* %s */ = {' % (oid("target/%s" % t["key"]), t["name"]))
+    w("\t\t\tisa = PBXNativeTarget;")
+    w('\t\t\tbuildConfigurationList = %s /* Build configuration list for PBXNativeTarget "%s" */;'
+      % (oid("configlist/%s" % t["key"]), t["name"]))
+    w("\t\t\tbuildPhases = (")
+    w("\t\t\t\t%s /* Sources */," % oid("phase/sources/%s" % t["key"]))
+    w("\t\t\t\t%s /* Frameworks */," % oid("phase/frameworks/%s" % t["key"]))
+    w("\t\t\t\t%s /* Resources */," % oid("phase/resources/%s" % t["key"]))
+    if t.get("embeds"):
+        w("\t\t\t\t%s /* Embed Foundation Extensions */," % oid("phase/embed/%s" % t["key"]))
+    w("\t\t\t);")
+    w("\t\t\tbuildRules = (\n\t\t\t);")
+    w("\t\t\tdependencies = (")
+    if t.get("embeds"):
+        w("\t\t\t\t%s /* PBXTargetDependency */," % oid("dep/%s" % t["key"]))
+    w("\t\t\t);")
+    w('\t\t\tname = "%s";' % t["name"])
+    w('\t\t\tproductName = "%s";' % t["name"])
+    w('\t\t\tproductReference = %s /* %s%s */;' % (oid("product/%s" % t["key"]), t["name"], PRODUCT_EXT[t["kind"]]))
+    w('\t\t\tproductType = "%s";' % PRODUCT_TYPE[t["kind"]])
+    w("\t\t};")
 w("/* End PBXNativeTarget section */")
 
-# ------------------------------------------------------------------ PBXProject
+# --- project -------------------------------------------------------------------------------------
 w("\n/* Begin PBXProject section */")
 w("\t\t%s /* Project object */ = {" % oid("project"))
 w("\t\t\tisa = PBXProject;")
 w("\t\t\tattributes = {")
 w("\t\t\t\tBuildIndependentTargetsInParallel = 1;")
-w("\t\t\t\tLastSwiftUpdateCheck = 2660;")
-w("\t\t\t\tLastUpgradeCheck = 2660;")
+w("\t\t\t\tLastSwiftUpdateCheck = 2700;")
+w("\t\t\t\tLastUpgradeCheck = 2700;")
 w("\t\t\t\tTargetAttributes = {")
-w("\t\t\t\t\t%s = {" % oid("target/app"))
-w("\t\t\t\t\t\tCreatedOnToolsVersion = 26.0;")
-w("\t\t\t\t\t};")
-w("\t\t\t\t\t%s = {" % oid("target/ext"))
-w("\t\t\t\t\t\tCreatedOnToolsVersion = 26.0;")
-w("\t\t\t\t\t};")
+for t in TARGETS:
+    w("\t\t\t\t\t%s = {" % oid("target/%s" % t["key"]))
+    w("\t\t\t\t\t\tCreatedOnToolsVersion = 27.0;")
+    w("\t\t\t\t\t};")
 w("\t\t\t\t};")
 w("\t\t\t};")
 w('\t\t\tbuildConfigurationList = %s /* Build configuration list for PBXProject "HelmsleyDrive" */;'
   % oid("configlist/project"))
-w("\t\t\tcompatibilityVersion = \"Xcode 14.0\";")
+w('\t\t\tcompatibilityVersion = "Xcode 14.0";')
 w("\t\t\tdevelopmentRegion = en;")
 w("\t\t\thasScannedForEncodings = 0;")
-w("\t\t\tknownRegions = (")
-w("\t\t\t\ten,")
-w("\t\t\t\tBase,")
-w("\t\t\t);")
+w("\t\t\tknownRegions = (\n\t\t\t\ten,\n\t\t\t\tBase,\n\t\t\t);")
 w("\t\t\tmainGroup = %s;" % oid("group/root"))
 w("\t\t\tproductRefGroup = %s /* Products */;" % oid("group/products"))
 w('\t\t\tprojectDirPath = "";')
 w('\t\t\tprojectRoot = "";')
 w("\t\t\ttargets = (")
-w("\t\t\t\t%s /* %s */," % (oid("target/app"), APP_TARGET))
-w("\t\t\t\t%s /* %s */," % (oid("target/ext"), EXT_TARGET))
+for t in TARGETS:
+    w('\t\t\t\t%s /* %s */,' % (oid("target/%s" % t["key"]), t["name"]))
 w("\t\t\t);")
 w("\t\t};")
 w("/* End PBXProject section */")
 
-# ------------------------------------------------------------ XCBuildConfiguration
+# --- build settings ------------------------------------------------------------------------------
 PROJECT_COMMON = {
     "ALWAYS_SEARCH_USER_PATHS": "NO",
     "CLANG_ENABLE_MODULES": "YES",
     "CLANG_ENABLE_OBJC_ARC": "YES",
     "COPY_PHASE_STRIP": "NO",
-    "ENABLE_HARDENED_RUNTIME": "YES",
     "ENABLE_STRICT_OBJC_MSGSEND": "YES",
     "GCC_NO_COMMON_BLOCKS": "YES",
-    "MACOSX_DEPLOYMENT_TARGET": "14.0",
-    "SDKROOT": "macosx",
     "SWIFT_VERSION": "5.0",
-    # The project has no shipping-vs-development split beyond optimisation, and automatic signing
-    # with the team below is what makes the App Group and keychain entitlements resolvable.
     "CODE_SIGN_STYLE": "Automatic",
     # The team, not the identifier in a signing certificate's common name — those differ, and the
     # wrong one here fails as "No Account for Team ..." at signing time.
     "DEVELOPMENT_TEAM": "CR2F6D8AF7",
+    # One place to bump for a TestFlight build. Info.plist reads both through $(...).
+    "MARKETING_VERSION": "1.0",
+    "CURRENT_PROJECT_VERSION": "1",
 }
 PROJECT_DEBUG = {
     "DEBUG_INFORMATION_FORMAT": "dwarf",
@@ -322,35 +354,53 @@ PROJECT_RELEASE = {
     "SWIFT_COMPILATION_MODE": "wholemodule",
 }
 
-APP_COMMON = {
-    "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
-    "CODE_SIGN_ENTITLEMENTS": "HelmsleyDrive/HelmsleyDrive.entitlements",
-    "COMBINE_HIDPI_IMAGES": "YES",
-    "CURRENT_PROJECT_VERSION": "1",
-    "ENABLE_PREVIEWS": "YES",
-    "GENERATE_INFOPLIST_FILE": "NO",
-    "INFOPLIST_FILE": "HelmsleyDrive/Info.plist",
-    "LD_RUNPATH_SEARCH_PATHS": '(\n\t\t\t\t\t"$(inherited)",\n\t\t\t\t\t"@executable_path/../Frameworks",\n\t\t\t\t)',
-    "MARKETING_VERSION": "1.0",
-    "PRODUCT_BUNDLE_IDENTIFIER": "uk.co.helmsley.HelmsleyDrive",
-    "PRODUCT_NAME": '"$(TARGET_NAME)"',
-    "SWIFT_EMIT_LOC_STRINGS": "YES",
+PLATFORM = {
+    "macos": {
+        "SDKROOT": "macosx",
+        "MACOSX_DEPLOYMENT_TARGET": "14.0",
+        # Required for notarisation, and harmless before it.
+        "ENABLE_HARDENED_RUNTIME": "YES",
+    },
+    "ios": {
+        "SDKROOT": "iphoneos",
+        # NSFileProviderReplicatedExtension is iOS 16; 17 is the floor worth supporting anyway.
+        "IPHONEOS_DEPLOYMENT_TARGET": "17.0",
+        "TARGETED_DEVICE_FAMILY": '"1,2"',
+        "SUPPORTS_MACCATALYST": "NO",
+        # An app extension is not a place to run a UI test host, and this quiets the archive.
+        "ENABLE_USER_SCRIPT_SANDBOXING": "YES",
+    },
 }
-EXT_COMMON = {
-    "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
-    "CODE_SIGN_ENTITLEMENTS": "FileProvider/FileProvider.entitlements",
-    "CURRENT_PROJECT_VERSION": "1",
-    "GENERATE_INFOPLIST_FILE": "NO",
-    "INFOPLIST_FILE": "FileProvider/Info.plist",
-    "LD_RUNPATH_SEARCH_PATHS": '(\n\t\t\t\t\t"$(inherited)",\n\t\t\t\t\t"@executable_path/../../../../Frameworks",\n\t\t\t\t)',
-    "MARKETING_VERSION": "1.0",
-    "PRODUCT_BUNDLE_IDENTIFIER": "uk.co.helmsley.HelmsleyDrive.FileProvider",
-    # Not "FileProvider": the module name is derived from this, and a module with the same name as
-    # the system framework it imports cannot see that framework at all.
-    "PRODUCT_NAME": '"$(TARGET_NAME)"',
-    "SKIP_INSTALL": "YES",
-    "SWIFT_EMIT_LOC_STRINGS": "YES",
+
+RUNPATH = {
+    ("macos", "app"): '(\n\t\t\t\t\t"$(inherited)",\n\t\t\t\t\t"@executable_path/../Frameworks",\n\t\t\t\t)',
+    ("macos", "ext"): '(\n\t\t\t\t\t"$(inherited)",\n\t\t\t\t\t"@executable_path/../../../../Frameworks",\n\t\t\t\t)',
+    ("ios", "app"): '(\n\t\t\t\t\t"$(inherited)",\n\t\t\t\t\t"@executable_path/Frameworks",\n\t\t\t\t)',
+    ("ios", "ext"): '(\n\t\t\t\t\t"$(inherited)",\n\t\t\t\t\t"@executable_path/Frameworks",\n\t\t\t\t\t"@executable_path/../../Frameworks",\n\t\t\t\t)',
 }
+
+
+def target_settings(t):
+    settings = dict(PLATFORM[t["platform"]])
+    settings.update({
+        "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon",
+        "CODE_SIGN_ENTITLEMENTS": '"%s"' % t["entitlements"],
+        "GENERATE_INFOPLIST_FILE": "NO",
+        "INFOPLIST_FILE": '"%s"' % t["info"],
+        "LD_RUNPATH_SEARCH_PATHS": RUNPATH[(t["platform"], t["kind"])],
+        "PRODUCT_BUNDLE_IDENTIFIER": t["bundle_id"],
+        "PRODUCT_NAME": '"$(TARGET_NAME)"',
+        "SWIFT_EMIT_LOC_STRINGS": "YES",
+    })
+    if t["kind"] == "ext":
+        settings["SKIP_INSTALL"] = "YES"
+    if t["platform"] == "macos" and t["kind"] == "app":
+        settings["COMBINE_HIDPI_IMAGES"] = "YES"
+        settings["ENABLE_PREVIEWS"] = "YES"
+    return settings
+
+
+w("\n/* Begin XCBuildConfiguration section */")
 
 
 def build_config(key, name, settings):
@@ -364,21 +414,19 @@ def build_config(key, name, settings):
     w("\t\t};")
 
 
-w("\n/* Begin XCBuildConfiguration section */")
 build_config("config/project/Debug", "Debug", dict(PROJECT_COMMON, **PROJECT_DEBUG))
 build_config("config/project/Release", "Release", dict(PROJECT_COMMON, **PROJECT_RELEASE))
-build_config("config/app/Debug", "Debug", APP_COMMON)
-build_config("config/app/Release", "Release", APP_COMMON)
-build_config("config/ext/Debug", "Debug", EXT_COMMON)
-build_config("config/ext/Release", "Release", EXT_COMMON)
+for t in TARGETS:
+    for configuration in ("Debug", "Release"):
+        build_config("config/%s/%s" % (t["key"], configuration), configuration, target_settings(t))
 w("/* End XCBuildConfiguration section */")
 
 w("\n/* Begin XCConfigurationList section */")
-for key, label, prefix in (
-    ("configlist/project", 'Build configuration list for PBXProject "HelmsleyDrive"', "config/project"),
-    ("configlist/app", 'Build configuration list for PBXNativeTarget "%s"' % APP_TARGET, "config/app"),
-    ("configlist/ext", 'Build configuration list for PBXNativeTarget "%s"' % EXT_TARGET, "config/ext"),
-):
+lists = [("configlist/project", 'Build configuration list for PBXProject "HelmsleyDrive"', "config/project")]
+lists += [("configlist/%s" % t["key"],
+           'Build configuration list for PBXNativeTarget "%s"' % t["name"],
+           "config/%s" % t["key"]) for t in TARGETS]
+for key, label, prefix in lists:
     w("\t\t%s /* %s */ = {" % (oid(key), label))
     w("\t\t\tisa = XCConfigurationList;")
     w("\t\t\tbuildConfigurations = (")
@@ -398,19 +446,20 @@ os.makedirs(PROJ, exist_ok=True)
 with open(os.path.join(PROJ, "project.pbxproj"), "w") as fh:
     fh.write("\n".join(lines) + "\n")
 
-# A shared scheme, so `xcodebuild -scheme HelmsleyDrive` works without opening Xcode first.
+# Shared schemes, so `xcodebuild -scheme ...` works without opening Xcode first.
 scheme_dir = os.path.join(PROJ, "xcshareddata", "xcschemes")
 os.makedirs(scheme_dir, exist_ok=True)
-scheme = """<?xml version="1.0" encoding="UTF-8"?>
-<Scheme LastUpgradeVersion = "2660" version = "1.7">
+
+SCHEME = """<?xml version="1.0" encoding="UTF-8"?>
+<Scheme LastUpgradeVersion = "2700" version = "1.7">
    <BuildAction parallelizeBuildables = "YES" buildImplicitDependencies = "YES">
       <BuildActionEntries>
          <BuildActionEntry buildForTesting = "YES" buildForRunning = "YES" buildForProfiling = "YES" buildForArchiving = "YES" buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "{app}"
-               BuildableName = "{APP}.app"
-               BlueprintName = "{APP}"
+               BlueprintIdentifier = "{id}"
+               BuildableName = "{name}.app"
+               BlueprintName = "{name}"
                ReferencedContainer = "container:HelmsleyDrive.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -420,9 +469,9 @@ scheme = """<?xml version="1.0" encoding="UTF-8"?>
       <BuildableProductRunnable runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "{app}"
-            BuildableName = "{APP}.app"
-            BlueprintName = "{APP}"
+            BlueprintIdentifier = "{id}"
+            BuildableName = "{name}.app"
+            BlueprintName = "{name}"
             ReferencedContainer = "container:HelmsleyDrive.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -431,9 +480,9 @@ scheme = """<?xml version="1.0" encoding="UTF-8"?>
       <BuildableProductRunnable runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "{app}"
-            BuildableName = "{APP}.app"
-            BlueprintName = "{APP}"
+            BlueprintIdentifier = "{id}"
+            BuildableName = "{name}.app"
+            BlueprintName = "{name}"
             ReferencedContainer = "container:HelmsleyDrive.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -441,8 +490,13 @@ scheme = """<?xml version="1.0" encoding="UTF-8"?>
    <AnalyzeAction buildConfiguration = "Debug"></AnalyzeAction>
    <ArchiveAction buildConfiguration = "Release" revealArchiveInOrganizer = "YES"></ArchiveAction>
 </Scheme>
-""".replace("{app}", oid("target/app")).replace("{APP}", APP_TARGET)
-with open(os.path.join(scheme_dir, "%s.xcscheme" % APP_TARGET), "w") as fh:
-    fh.write(scheme)
+"""
 
-print("wrote", os.path.join(PROJ, "project.pbxproj"))
+for t in TARGETS:
+    if t["kind"] != "app":
+        continue
+    scheme = SCHEME.replace("{id}", oid("target/%s" % t["key"])).replace("{name}", t["name"])
+    with open(os.path.join(scheme_dir, "%s.xcscheme" % t["name"]), "w") as fh:
+        fh.write(scheme)
+
+print("wrote %s (%d targets)" % (os.path.join(PROJ, "project.pbxproj"), len(TARGETS)))

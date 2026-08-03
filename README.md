@@ -1,8 +1,9 @@
 # Helmsley Drive
 
-The Helmsley client portal's document tree, mounted in Finder as a volume.
+The Helmsley client portal's document tree, mounted as a volume — in Finder on macOS, and under
+Locations in the Files app on iPhone and iPad.
 
-Not a sync folder: nothing is copied to the Mac until it is opened, and the structure in Finder is
+Not a sync folder: nothing is copied to the device until it is opened, and the structure shown is
 the portal's own documents explorer — the same folders, showing the same documents, filing an upload
 exactly where the dashboard would have filed it.
 
@@ -26,29 +27,43 @@ Two halves, in two repositories.
 **`../Helmsley` — the portal.** Gained a file-provider API and a way for a native app to
 authenticate. See *Changes to the portal* below.
 
-**This repository — the Mac app.** An Xcode project with two targets:
+**This repository — the apps.** One Xcode project, four targets, two platforms:
 
-| Target | What it is | What it does |
+| Target | Platform | What it is |
 | --- | --- | --- |
-| `HelmsleyDrive` | the app | Signs in, and registers the file provider domain. Nothing else. |
-| `HelmsleyFileProvider` | an `NSFileProviderReplicatedExtension` | Everything Finder actually talks to: enumerating folders, fetching bytes, uploading, deleting. |
+| `HelmsleyDrive` | macOS | the container app: signs in, registers the domain, nothing else |
+| `HelmsleyFileProvider` | macOS | an `NSFileProviderReplicatedExtension` — everything Finder talks to |
+| `HelmsleyDrive-iOS` | iOS | the same two jobs, in an iOS shape |
+| `HelmsleyFileProvider-iOS` | iOS | the same extension, for the Files app |
 
-They are separate processes and share three things — the portal address (app group defaults), the
-OAuth token set (keychain access group), and the enumeration snapshots the change diff is computed
-against (app group container). `Shared/` is compiled into both.
+An app and its extension are separate processes, sharing three things: the portal address (app group
+defaults), the OAuth token set (keychain access group), and the enumeration snapshots the change
+diff is computed against (app group container).
+
+The two platforms share everything but their UI. `FileProvider/` — the whole engine — is compiled
+into both extensions unchanged; the platform difference amounts to two `#if os(macOS)` blocks.
 
 ```
-Shared/
-  Configuration.swift   identifiers, portal address, and the one hard-coded team prefix
+Shared/                 compiled into all four targets
+  Configuration.swift   identifiers, portal address, and the keychain group lookup
   OAuth.swift           PKCE flow, token exchange/refresh, and the actor that hands out a live token
   TokenStore.swift      the token set, in the shared keychain
   HelmsleyAPI.swift     every call to /api/files
   ItemIdentity.swift    what an NSFileProviderItemIdentifier means here
-HelmsleyDrive/          the app: sign-in sheet, window, domain registration
-FileProvider/           the extension: items, enumerators, and the extension class itself
+AppShared/              the two container apps, not the extensions
+  AppModel.swift        sign in, mount, unmount — the state behind both UIs
+  SignIn.swift          the OAuth sheet, anchored to an NSWindow or a UIWindow
+FileProvider/           both extensions: items, enumerators, and the extension class itself
+HelmsleyDrive/          macOS UI          HelmsleyDrive-iOS/    iOS UI
+                                          FileProvider-iOS/     iOS extension plist/entitlements
 Tools/generate-xcodeproj.py   regenerates HelmsleyDrive.xcodeproj (see below)
-Tools/generate-icon.py        builds the app icon from the portal's H mark
+Tools/generate-icon.py        builds the app icons from the portal's H mark
+Tools/flatten-png.swift       strips alpha, which App Store icons may not have
 ```
+
+`AppShared/` is separate from `Shared/` for a reason the compiler enforces: `UIApplication.shared`,
+which presents the sign-in sheet, is barred outright inside an iOS app extension. An extension never
+signs in interactively, so that code has no business being compiled into one.
 
 ### Identity
 
@@ -73,20 +88,22 @@ on navigating in, and immediately after any upload or delete made from Finder.
 The working set is deliberately empty. Filling it would mean enumerating every document of every
 client of every syndicate on a schedule nobody asked for; folders enumerate on demand instead.
 
-## What Finder can and cannot do
+## What the volume can and cannot do
+
+Identical on both platforms — it is the same extension.
 
 | | |
 | --- | --- |
 | Browse the whole admin tree | yes |
 | Open, preview, Quick Look, copy out | yes — downloaded on first open, evictable afterwards |
-| Drag a file **into** a folder that accepts uploads | yes — filed via the portal's own ticket → bucket → finalise path |
+| Move a file **into** a folder that accepts uploads | yes — filed via the portal's own ticket → bucket → finalise path |
 | Delete a document | yes — deletes the row and its bytes, exactly as the dashboard's delete does |
 | Rename, move, or save changes back | **no** — refused with an explanation |
 
 Rename and in-place editing are refused because the portal has no endpoint behind them: a
 document's title, type and links are the filing an admin chose, and some filings it refuses to
 change at all (a compliance document cannot be refiled). Offering them would mean accepting an edit
-in Finder that quietly never reached the server. Files show as locked, which is the truth.
+that quietly never reached the server. Files show as locked, which is the truth.
 
 Which folders accept uploads comes from the portal's `directoryStructure.js`, resolved server-side —
 the app never sends a document type or a client id, so it cannot file anything anywhere the
@@ -143,24 +160,74 @@ fails at the authorize step with an unknown-client error.
 
 ## Building
 
-Requires Xcode and a signing team. The project is set to team `RW34QL2584` (Ben Reeves).
+Requires Xcode and a signing team. The project is set to team `CR2F6D8AF7`.
 
 ```bash
 xcodebuild -project HelmsleyDrive.xcodeproj -scheme HelmsleyDrive -configuration Debug -allowProvisioningUpdates build
 ```
 
-The first build has to register three things with the developer portal, which `-allowProvisioningUpdates`
-does automatically — or open the project in Xcode once and let it:
+```bash
+xcodebuild -project HelmsleyDrive.xcodeproj -scheme HelmsleyDrive-iOS -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
+```
+
+The first build of each has to register three things with the developer portal, which
+`-allowProvisioningUpdates` does automatically — or open the project in Xcode once and let it:
 
 - App IDs `uk.co.helmsley.HelmsleyDrive` and `uk.co.helmsley.HelmsleyDrive.FileProvider`
 - App Group `group.uk.co.helmsley.HelmsleyDrive`, enabled on both
 - Keychain sharing on both, group `uk.co.helmsley.HelmsleyDrive`
+
+Both platforms use those same two App IDs, so they are one app in App Store Connect.
 
 To check that it compiles without touching the developer portal at all:
 
 ```bash
 xcodebuild -project HelmsleyDrive.xcodeproj -scheme HelmsleyDrive -configuration Debug CODE_SIGNING_ALLOWED=NO build
 ```
+
+## Shipping the iOS app to TestFlight
+
+Bump the version, which both Info.plists read through `$(...)` — `MARKETING_VERSION` and
+`CURRENT_PROJECT_VERSION` in `Tools/generate-xcodeproj.py`, then re-run it. App Store Connect
+rejects a build number it has already seen, so `CURRENT_PROJECT_VERSION` has to move every upload.
+
+```bash
+xcodebuild -project HelmsleyDrive.xcodeproj -scheme HelmsleyDrive-iOS -configuration Release \
+  -destination 'generic/platform=iOS' -archivePath build/HelmsleyDrive-iOS.xcarchive \
+  -allowProvisioningUpdates archive
+```
+
+Then **Xcode → Window → Organizer → Distribute App → TestFlight & App Store**. Use the Organizer
+rather than `xcodebuild -exportArchive` for the first upload: the same flow creates the App Store
+distribution certificate, exports the `.ipa` and uploads it, signed in as you throughout.
+
+Before the first upload can succeed, the app record has to exist:
+**App Store Connect → Apps → + → New App**, platform iOS, bundle ID `uk.co.helmsley.HelmsleyDrive`.
+Then add testers under TestFlight → Internal Testing. Internal testers (up to 100, all on your
+team) need no Beta App Review, so a build is installable within minutes of processing.
+
+`ITSAppUsesNonExemptEncryption` is already `false` in the Info.plist — the only cryptography here is
+HTTPS and the system keychain, which is exactly what the exemption covers — so no export-compliance
+question is asked on any upload.
+
+Once it is set up, later uploads can skip the Organizer with an App Store Connect API key:
+
+```bash
+xcodebuild -exportArchive -archivePath build/HelmsleyDrive-iOS.xcarchive \
+  -exportOptionsPlist ExportOptions.plist -exportPath build/export -allowProvisioningUpdates
+xcrun altool --upload-app -f build/export/HelmsleyDrive-iOS.ipa -t ios \
+  --apiKey <KEY_ID> --apiIssuer <ISSUER_ID>
+```
+
+### Why TestFlight and not the App Store
+
+The app's whole function is administrator access to one private portal. There is nothing for a
+public reviewer to evaluate and no account they could be given, so a public listing invites a
+rejection that TestFlight avoids entirely. Internal testing also has no review step at all.
+
+macOS is not distributed this way — it is built and copied to `/Applications` (see above). The two
+platforms share App IDs, so if the Mac app ever does need distributing, it belongs to the same App
+Store Connect record.
 
 ### Changing the development team
 
@@ -236,6 +303,16 @@ it signs you out, since a token minted by one server means nothing to another. A
 The app has to stay installed: an extension is loaded out of its host app's bundle, so deleting the
 app unmounts the volume.
 
+### On iPhone and iPad
+
+Install from TestFlight, open the app, **Sign In and Add to Files**. The tree then appears in
+**Files → Browse → Locations → Helmsley Documents**, and in any document picker — so a remittance
+can be attached to an email without leaving Mail.
+
+No `/Applications` equivalent to worry about: an installed iOS app is already where the system
+expects it. **Add to Files** on its own re-registers the domain after a reinstall without asking for
+another sign-in, exactly as **Mount in Finder** does on the Mac.
+
 ### When something is wrong
 
 Start here — the extension logs every failure, and Finder shows none of them:
@@ -295,4 +372,13 @@ Working against the live portal, through the real mount at
 - fetching a document's bytes end to end: 302 into Cloud Storage, `Authorization` stripped at the
   redirect, all 2,019,970 bytes of a PDF arriving intact
 
-Not yet exercised: upload and delete from Finder.
+On iOS, verified as far as this machine allows:
+
+- all four targets build; the macOS pair is unchanged by the split
+- the iOS app runs in the simulator and renders correctly
+- a Release archive for `generic/platform=iOS` signs and validates: both bundle ids, the extension
+  embedded with the right principal class, icons compiled in, `ITSAppUsesNonExemptEncryption` set,
+  and the signed entitlements carrying the app group and the team-prefixed keychain group
+
+Not yet exercised: upload and delete from Finder; and on iOS, everything past launch — signing in
+needs a real SMS code, and the extension needs a device.

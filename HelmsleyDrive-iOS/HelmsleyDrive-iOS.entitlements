@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- No app-sandbox key: on iOS every app is sandboxed, and the entitlement does not exist. -->
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.uk.co.helmsley.HelmsleyDrive</string>
+	</array>
+	<!-- Where the OAuth token set lives, so the extension can spend and rotate it. Configuration
+	     reads the expanded value back at runtime rather than assuming the prefix. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)uk.co.helmsley.HelmsleyDrive</string>
+	</array>
+</dict>
+</plist>

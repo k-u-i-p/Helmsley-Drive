@@ -5,9 +5,9 @@
          <BuildActionEntry buildForTesting = "YES" buildForRunning = "YES" buildForProfiling = "YES" buildForArchiving = "YES" buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "HD000000000000000000006C"
-               BuildableName = "HelmsleyDrive.app"
-               BlueprintName = "HelmsleyDrive"
+               BlueprintIdentifier = "HD000000000000000000006F"
+               BuildableName = "HelmsleyDrive-iOS.app"
+               BlueprintName = "HelmsleyDrive-iOS"
                ReferencedContainer = "container:HelmsleyDrive.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -17,9 +17,9 @@
       <BuildableProductRunnable runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "HD000000000000000000006C"
-            BuildableName = "HelmsleyDrive.app"
-            BlueprintName = "HelmsleyDrive"
+            BlueprintIdentifier = "HD000000000000000000006F"
+            BuildableName = "HelmsleyDrive-iOS.app"
+            BlueprintName = "HelmsleyDrive-iOS"
             ReferencedContainer = "container:HelmsleyDrive.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -28,9 +28,9 @@
       <BuildableProductRunnable runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "HD000000000000000000006C"
-            BuildableName = "HelmsleyDrive.app"
-            BlueprintName = "HelmsleyDrive"
+            BlueprintIdentifier = "HD000000000000000000006F"
+            BuildableName = "HelmsleyDrive-iOS.app"
+            BlueprintName = "HelmsleyDrive-iOS"
             ReferencedContainer = "container:HelmsleyDrive.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

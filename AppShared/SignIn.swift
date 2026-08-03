@@ -1,5 +1,10 @@
 import AuthenticationServices
 import Foundation
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 /// Runs the OAuth authorization-code flow in a system browser sheet.
 ///
@@ -57,7 +62,17 @@ final class SignIn: NSObject {
 }
 
 extension SignIn: ASWebAuthenticationPresentationContextProviding {
+    /// The window the sheet hangs off. `ASPresentationAnchor` is an `NSWindow` on one platform and a
+    /// `UIWindow` on the other, which is the whole of the difference between them here.
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first ?? ASPresentationAnchor()
+        #if os(macOS)
+        return NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first ?? ASPresentationAnchor()
+        #else
+        let window = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }
+        return window ?? ASPresentationAnchor()
+        #endif
     }
 }
