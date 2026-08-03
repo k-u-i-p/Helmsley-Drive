@@ -98,12 +98,17 @@ struct HelmsleyAPI: Sendable {
 
     /// Downloads a document's bytes to a temporary file, which the caller owns and must move or
     /// delete. Streamed to disk rather than held in memory: documents run to hundreds of megabytes,
-    /// and an extension that buffers one is an extension the system kills.
-    func downloadContents(id: Int) async throws -> URL {
+    /// and the portal never sees them at all — the request is answered with a redirect into Cloud
+    /// Storage, so the transfer is between this device and the bucket.
+    ///
+    /// `reporting` is the progress the file provider handed back to the system. The transfer's own
+    /// progress is attached to it as a child, which both drives the percentage the user watches and
+    /// makes cancelling it cancel the actual transfer.
+    func downloadContents(id: Int, reporting parent: Progress? = nil) async throws -> URL {
         var request = URLRequest(url: base.appendingPathComponent("documents/\(id)/content"))
         request.setValue("Bearer \(try await TokenProvider.shared.accessToken())", forHTTPHeaderField: "Authorization")
 
-        let (url, response) = try await URLSession.shared.download(for: request, delegate: RedirectSanitiser.shared)
+        let (url, response) = try await Transport.download(request, reporting: parent)
         guard let http = response as? HTTPURLResponse else {
             try? FileManager.default.removeItem(at: url)
             throw APIError.malformedResponse
@@ -122,7 +127,7 @@ struct HelmsleyAPI: Sendable {
     ///
     /// The bytes never pass through the portal — App Engine caps a request at 32MB — so the middle
     /// step talks to a completely different host, using a URL signed for exactly this one object.
-    func upload(path: [String], filename: String, mime: String?, fileURL: URL) async throws -> RemoteFile {
+    func upload(path: [String], filename: String, mime: String?, fileURL: URL, reporting parent: Progress? = nil) async throws -> RemoteFile {
         struct Ticket: Decodable {
             let uploadId: String
             let uploadUrl: String
@@ -146,7 +151,7 @@ struct HelmsleyAPI: Sendable {
 
         // No Authorization header of ours goes to the bucket: the signature in the URL is the whole
         // credential, and the portal's bearer token has no business on another host.
-        let (_, putResponse) = try await URLSession.shared.upload(for: put, fromFile: fileURL)
+        let (_, putResponse) = try await Transport.upload(put, fromFile: fileURL, reporting: parent)
         let putStatus = (putResponse as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(putStatus) else { throw APIError.uploadRejected(status: putStatus) }
 
@@ -184,7 +189,7 @@ struct HelmsleyAPI: Sendable {
         var authorised = request
         authorised.setValue("Bearer \(try await TokenProvider.shared.accessToken())", forHTTPHeaderField: "Authorization")
 
-        let (data, response) = try await URLSession.shared.data(for: authorised, delegate: RedirectSanitiser.shared)
+        let (data, response) = try await URLSession.shared.data(for: authorised, delegate: Transport.sanitiser)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else {
             let message = Self.serverMessage(data) ?? ""
@@ -207,14 +212,77 @@ struct HelmsleyAPI: Sendable {
     }
 }
 
+/// Where the bytes actually move.
+///
+/// Both transfers are between this device and Cloud Storage — the portal only ever hands over a
+/// redirect or a signed URL — so neither passes through App Engine, which caps a request at 32MB
+/// against a 500MB document limit.
+///
+/// Task-based rather than the async conveniences, because the framework wants the transfer's
+/// `Progress`: it is what the user watches, and cancelling it has to cancel the transfer itself
+/// (`NSFileProviderReplicatedExtension`'s contract — the system cancels a fetch that stalls, and
+/// expects the extension to stop and answer promptly).
+enum Transport {
+
+    static let sanitiser = RedirectSanitiser()
+
+    /// One session for every transfer, with the sanitiser as its delegate. A delegate-backed
+    /// session is what makes the redirect callback fire for completion-handler tasks.
+    private static let session = URLSession(configuration: .default, delegate: sanitiser, delegateQueue: nil)
+
+    static func download(_ request: URLRequest, reporting parent: Progress?) async throws -> (URL, URLResponse) {
+        try await withCheckedThrowingContinuation { continuation in
+            let task = session.downloadTask(with: request) { url, response, error in
+                guard let url, let response else {
+                    return continuation.resume(throwing: error ?? APIError.malformedResponse)
+                }
+                // The completion-handler form deletes its temporary file the moment this returns,
+                // so it has to be moved now rather than by whoever is awaiting.
+                let kept = FileManager.default.temporaryDirectory
+                    .appendingPathComponent(UUID().uuidString)
+                do {
+                    try FileManager.default.moveItem(at: url, to: kept)
+                    continuation.resume(returning: (kept, response))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+            attach(task, to: parent)
+            task.resume()
+        }
+    }
+
+    static func upload(_ request: URLRequest, fromFile file: URL, reporting parent: Progress?) async throws -> (Data, URLResponse) {
+        try await withCheckedThrowingContinuation { continuation in
+            let task = session.uploadTask(with: request, fromFile: file) { data, response, error in
+                guard let response else {
+                    return continuation.resume(throwing: error ?? APIError.malformedResponse)
+                }
+                continuation.resume(returning: (data ?? Data(), response))
+            }
+            attach(task, to: parent)
+            task.resume()
+        }
+    }
+
+    /// Makes the caller's progress the parent of the transfer's own.
+    ///
+    /// `URLSessionTask.progress` already counts bytes and already cancels the task when it is
+    /// cancelled, and `NSProgress` propagates cancellation down to its children — so this one line
+    /// is both the percentage the user sees and the cancellation path the framework requires.
+    private static func attach(_ task: URLSessionTask, to parent: Progress?) {
+        guard let parent else { return }
+        parent.totalUnitCount = 100
+        parent.addChild(task.progress, withPendingUnitCount: 100)
+    }
+}
+
 /// Strips the `Authorization` header when a request is redirected to another host.
 ///
 /// A document download is a 302 into Cloud Storage carrying a signed URL, and `URLSession` follows
 /// redirects by replaying the original headers — which would hand the portal's bearer token to a
 /// completely unrelated host. The signature is the only credential the bucket wants anyway.
 final class RedirectSanitiser: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
-
-    static let shared = RedirectSanitiser()
 
     func urlSession(
         _ session: URLSession,
@@ -228,6 +296,9 @@ final class RedirectSanitiser: NSObject, URLSessionTaskDelegate, @unchecked Send
 
         var stripped = request
         stripped.setValue(nil, forHTTPHeaderField: "Authorization")
+        // Logged because it is a security property nobody can otherwise observe: without this line
+        // there is no way to tell a stripped redirect from one that quietly carried the token on.
+        Log.api.info("redirect to \(request.url?.host ?? "?", privacy: .public) — Authorization stripped")
         completionHandler(stripped)
     }
 }

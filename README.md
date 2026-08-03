@@ -77,6 +77,24 @@ A file's version is its content hash, which is also its key in the storage bucke
 and only when the bytes do, so a downloaded copy stays valid until the document is genuinely
 replaced.
 
+### Where the bytes go
+
+Never through the portal. A download is answered with a `302` into Cloud Storage and an upload PUTs
+to a signed URL, so both transfers are between the device and the bucket — App Engine only ever
+carries the redirect, the upload ticket and the finalise. That is not a nicety: App Engine caps a
+request at 32MB against a 500MB document limit, so proxying could not work.
+
+`Transport` (in `HelmsleyAPI.swift`) builds those transfers as `URLSessionTask`s rather than using
+the async conveniences, because the framework wants the task's `Progress`: it is the percentage the
+user watches, and the system cancels a fetch that stalls and expects the extension to stop promptly.
+Attaching the task's own progress as a child of the one handed back gives both — byte-accurate
+progress, and cancellation that reaches the transfer.
+
+`RedirectSanitiser` strips `Authorization` on any cross-host hop. `URLSession` replays headers across
+redirects by default, which would hand the portal's bearer token to Google; the signed URL is the
+only credential the bucket wants. It logs each time it fires, because otherwise there is no way to
+tell a stripped redirect from one that quietly carried the token on.
+
 ### Keeping up to date
 
 The portal has no change feed — `documents` records an upload date and nothing else — so "what
@@ -369,8 +387,12 @@ Working against the live portal, through the real mount at
 - the root and both entity fan-outs (`Properties`, `Clients`) enumerating with real names
 - files listed with their true sizes, and permissions matching the tree — `News` writable,
   `Properties` and `Clients` read-only, documents read-only
-- fetching a document's bytes end to end: 302 into Cloud Storage, `Authorization` stripped at the
-  redirect, all 2,019,970 bytes of a PDF arriving intact
+- fetching a document's bytes end to end, proven by hash: the md5 of a PDF read through the mount
+  equals the `content_hash` the database recorded at upload, with the log showing the fetch, the
+  redirect to `storage.googleapis.com`, and `Authorization` being stripped on the way
+
+  Verify with anything that reads every byte — `md5`, not `wc -c`, which answers from `fstat`
+  without touching the file and so "passes" against a document that was never downloaded at all.
 
 On iOS, verified as far as this machine allows:
 

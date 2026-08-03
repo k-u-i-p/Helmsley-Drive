@@ -80,7 +80,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         request: NSFileProviderRequest,
         completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
-        let progress = Progress(totalUnitCount: 1)
+        let progress = Progress()
 
         guard let identity = ItemIdentity(itemIdentifier),
               case .file(let path, let documentID) = identity else {
@@ -88,19 +88,28 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             return progress
         }
 
-        Task {
+        let work = Task {
             do {
                 // Metadata first: the item handed back must describe the bytes handed back, and a
                 // document replaced between the system's last listing and this fetch would
                 // otherwise be delivered under the old version and never re-fetched.
                 let remote = try await api.document(id: documentID)
-                let url = try await api.downloadContents(id: documentID)
+                // The most expensive thing this extension does, and the only one whose cost the
+                // user feels — worth a line each way, so a slow mount can be told from a slow link.
+                Log.provider.info("fetching \(remote.filename, privacy: .public) (\(remote.size ?? -1, privacy: .public) bytes)")
+                let url = try await api.downloadContents(id: documentID, reporting: progress)
+                Log.provider.info("fetched \(remote.filename, privacy: .public)")
                 completionHandler(url, FileProviderItem.file(path: path, remote: remote), nil)
             } catch {
+                Log.provider.error("fetch of document \(documentID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 completionHandler(nil, nil, FileProviderError.translate(error))
             }
-            progress.completedUnitCount = 1
         }
+        // The system cancels a fetch that stalls or takes too long, as well as relaying the user's
+        // own cancellation, and expects the completion handler promptly either way. Cancelling the
+        // progress already cancels the transfer through its child; this stops the surrounding work
+        // too, so the answer comes back rather than waiting on a request nobody wants.
+        progress.cancellationHandler = { work.cancel() }
         return progress
     }
 
@@ -114,7 +123,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         request: NSFileProviderRequest,
         completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
     ) -> Progress {
-        let progress = Progress(totalUnitCount: 1)
+        let progress = Progress()
 
         // The tree is the portal's, and it is fixed: a folder means a filter over `documents`, not
         // a container that can be created. Refused rather than silently ignored, so a new folder
@@ -138,18 +147,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         // the server signs it into the upload URL, so it has to be decided before a byte is sent.
         let mime = itemTemplate.contentType?.preferredMIMEType
 
-        Task {
+        let work = Task {
             do {
-                let remote = try await api.upload(path: path, filename: filename, mime: mime, fileURL: contents)
+                let remote = try await api.upload(path: path, filename: filename, mime: mime, fileURL: contents, reporting: progress)
                 await signalChange(at: itemTemplate.parentItemIdentifier)
                 // No pending fields and nothing still uploading: the document is filed by the time
                 // this returns, because the finalise step is what created it.
                 completionHandler(FileProviderItem.file(path: path, remote: remote), [], false, nil)
             } catch {
+                Log.provider.error("upload to \(path.logPath, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 completionHandler(nil, [], false, FileProviderError.translate(error))
             }
-            progress.completedUnitCount = 1
         }
+        progress.cancellationHandler = { work.cancel() }
         return progress
     }
 
@@ -259,7 +269,12 @@ enum FileProviderError {
     static func translate(_ error: Error) -> Error {
         switch error {
         case is CancellationError:
-            return NSFileProviderError(.serverUnreachable)
+            // What the framework asks for by name when a returned progress is cancelled. Reporting
+            // anything else — this used to say `.serverUnreachable` — turns a cancellation into a
+            // failure the system retries, which is the opposite of what was asked.
+            return CocoaError(.userCancelled)
+        case let url as URLError where url.code == .cancelled:
+            return CocoaError(.userCancelled)
         case OAuthError.notAuthenticated:
             // What puts "Sign in" next to the volume in Finder rather than an error nobody can act on.
             return NSFileProviderError(.notAuthenticated)
