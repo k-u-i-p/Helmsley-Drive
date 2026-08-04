@@ -203,10 +203,13 @@ can do differs between them, because they are different kinds of thing.
 The **classified tree** — Clients, Properties, everything the dashboard files — is a set of views
 over `documents`. A row has no path and appears in every folder whose filter matches it.
 
-**My Files** is the signed-in admin's own folder, and the one branch that is a real filesystem: a row
-sits in exactly one directory because someone put it there.
+The **file trees** — `My Files`, the signed-in admin's own folder, and `Shared`, the office's — are
+the branches that are a real filesystem: a row sits in exactly one directory because someone put it
+there. They are one table under two mounts and behave identically here; the difference is only who
+else sees them, which is the portal's business. A row can be dragged from one to the other, and the
+whole subtree goes with it.
 
-| | classified tree | My Files |
+| | classified tree | file trees |
 | --- | --- | --- |
 | Browse | yes | yes |
 | Open, preview, Quick Look, copy out | yes — downloaded on first open, evictable afterwards | yes |
@@ -224,21 +227,27 @@ accepting an edit that quietly never reached the server; Finder shows them as lo
 truth.
 
 Saving changes back is refused on **both** halves, and for the same reason each time: nothing
-replaces a file's bytes under the same row. A document's are the filing; an admin's own file is
+replaces a file's bytes under the same row. A document's are the filing; a file row's bytes are
 stored under a key derived from its content hash, so different bytes are a different row.
 
 Which folders accept uploads comes from the portal's `directoryStructure.js`, resolved server-side —
 the app never sends a document type or a client id, so it cannot file anything anywhere the
 dashboard would not have. Which folders can be *restructured* is not a flag on a listing at all: the
-mount has one fixed segment (`My Files`, stable while the folder is labelled with the admin's name),
-and `ItemIdentity` decides from the path alone, before Finder is offered the operation.
+mounts have fixed segments (`My Files`, stable while the folder is labelled with the admin's name,
+and `Shared`), and `ItemIdentity` decides from the path alone, before Finder is offered the
+operation.
 
 ### Item identifiers are opaque, and two shapes
 
-Two tables hang off one volume — `documents` and the admin's own files — and their ids are serials
-from separate sequences, so the server marks which one an id came from and hands over the whole
-thing as a string. Nothing in this app parses one. Reading an id as a number would silently drop the
-mark and fail to decode every personal item outright.
+Two tables hang off one volume — `documents` and `admin_files` — and their ids are serials from
+separate sequences, so the server marks which one an id came from and hands over the whole thing as
+a string. Nothing in this app parses one. Reading an id as a number would silently drop the mark and
+fail to decode every file row outright.
+
+`admin_files` is one table under two mounts, `My Files` and `Shared`, so an id names a row in either
+without saying which — and nothing here is told. The two behave identically: same identifiers, same
+capabilities, same bin. Which tree a row is in decides only *who else sees it*, which is the
+portal's business and never this app's.
 
 What an identifier is made of differs between the halves, and has to:
 
@@ -246,28 +255,30 @@ What an identifier is made of differs between the halves, and has to:
   document genuinely is a different item in each folder that lists it — it has no path of its own,
   and a filesystem insisting on one parent has to pick. Folders there are identified by path, since
   a folder is a filter the directory spec defines and has no identity apart from where it sits.
-- **My Files** identifies everything by the row id alone. A path would be the wrong thing: rows there
-  move, and go into the bin and come back, and if the path were part of the identifier every one of
-  those would change what the system thinks the item *is*.
+- **The file trees** (`My Files`, `Shared`) identify everything by the row id alone. A path would be
+  the wrong thing: rows there move — between the two mounts as well as within one — and go into the
+  bin and come back, and if the path were part of the identifier every one of those would change
+  what the system thinks the item *is*.
 
-`ItemIdentity` still decodes the path-based form for personal items, so nothing already synced is
-orphaned; the first enumeration after this change re-issues them by id, which costs one re-sync of
+`ItemIdentity` still decodes the path-based form for file rows, so nothing already synced is
+orphaned; the first enumeration after that change re-issues them by id, which costs one re-sync of
 `My Files` and nothing else. Where the item's parent is not in its identifier, it comes from
 `/api/files/items/:id` — the same lookup that says whether it is in the trash.
 
-The mount itself is the exception, and has to be: `My Files` is listed by the classified tree above
-it, which has no ids at all, so it is addressed by path and by nothing else. An item sitting
-directly in it therefore reports **no** parent rather than the root row's id. The row is real — it
-is what everything below hangs off in the table — but naming it would hang the item off an
-identifier no listing ever vends, and the system would go looking for a folder it had never seen.
+A mount itself is the exception, and has to be: `My Files` and `Shared` are listed by the classified
+tree above them, which has no ids at all, so each is addressed by path and by nothing else. An item
+sitting directly in one therefore reports **no** parent rather than the root row's id — and, since
+there are two, a `root` naming which mount to hang it under instead. The row is real — it is what
+everything below hangs off in the table — but naming it would hang the item off an identifier no
+listing ever vends, and the system would go looking for a folder it had never seen.
 `/api/files/items/:id` answers 404 for that row for the same reason, and because it has no name of
 its own to answer with: an item with an empty filename is not an error the file provider framework
 reports but one it aborts on, so nothing may ever be in a position to hand it one.
 
 ### The trash
 
-`My Files` only. `deleted_at` on `admin_files` is the whole mechanism, and it is a flag rather than a
-move: the row keeps the parent it always had, so putting it back is clearing the flag, and a folder
+The file trees only, and one bin across both of them, as the volume has one Trash. `deleted_at` on
+`admin_files` is the whole mechanism, and it is a flag rather than a move: the row keeps the parent it always had, so putting it back is clearing the flag, and a folder
 comes back with its subtree intact. Only the top of what was thrown away is marked — everything
 under it is already unreachable, because walking requires every hop to be live — which is also why
 the bin lists the folder rather than each file that went along inside it.
@@ -319,11 +330,11 @@ All in `../Helmsley`:
 | `backend/utils/http/bearerAdmin.js` | **new** — authenticates a request by OAuth access token instead of by session cookie |
 | `backend/utils/domain/documents/deleteDocument.js` | **new** — the delete (row + bytes), extracted so Finder and the dashboard cannot come to disagree about it |
 | `backend/routes/admin/documents.js` | delete now calls the above |
-| `backend/utils/domain/adminFiles/adminFileTree.js` | **new** — My Files, walked and listed: the mount the classified tree hands off to. Reads exclude trashed rows; `folderById`/`itemById` address one by id, `listTrash` answers the bin |
+| `backend/utils/domain/adminFiles/adminFileTree.js` | **new** — the file trees, walked and listed: the mounts the classified tree hands off to. Reads exclude trashed rows; `folderById`/`itemById` address one by id, `listTrash` answers the bin. `owner_admin_id` is which tree, NULL being the shared one |
 | `backend/utils/domain/adminFiles/adminFileWrites.js` | **new** — everything that changes it: new folder, rename, move, trash, restore, purge, finalise |
 | `backend/routes/admin/myFiles.js` | the dashboard's delete now trashes, and gains trash/restore/purge — the two surfaces sit over one table and a delete has to mean one thing across both |
 | `backend/utils/domain/documents/stagedUpload.js` | **new** — the bucket half of an upload, which was the same for both trees all along |
-| `backend/utils/domain/documents/directoryStructure.js` | the `My Files` mount node |
+| `backend/utils/domain/documents/directoryStructure.js` | the `My Files` and `Shared` mount nodes |
 | `backend/utils/domain/documents/directoryCompiler.js` | admin file listings also carry `file_mime`, `byte_size`, `content_hash`; a `mount` node hands its subtree over whole |
 | `backend/routes/admin/mcp/oauthProvider.js` | resolves additional statically registered OAuth clients |
 | `backend/utils/http/urls.js` | CSP `form-action` covers every registered client's callback, private-use schemes by scheme alone |
@@ -332,13 +343,13 @@ All in `../Helmsley`:
 | `config.json` | registers the `helmsley-drive` client, and the APNs key |
 | `backend/utils/integrations/apns.js` | **new** — the APNs sender: an ES256 JWT and one HTTP/2 POST per device, no dependency |
 | `backend/utils/domain/fileProvider/pushDevices.js` | **new** — the registered devices, keyed by token |
-| `backend/utils/domain/fileProvider/changeSignal.js` | **new** — `signalDocuments()` / `signalPersonalFiles()`, coalesced and fanned out |
-| `backend/routes/fileProvider.js` | `POST`/`DELETE /push-token` |
+| `backend/utils/domain/fileProvider/changeSignal.js` | **new** — `signalDocuments()` / `signalPersonalFiles()` / `signalSharedFiles()`, coalesced and fanned out. A shared change tells everyone, as a documents change does |
+| `backend/routes/fileProvider.js` | `POST`/`DELETE /push-token`; every item carries `root`, the segment of the mount it hangs from, which is what a top-level row's null `parent` no longer says on its own |
 | `backend/scripts/init-db.js` | `file_provider_devices` |
 | everything that writes a document | signals afterwards: `finaliseUpload.js`, `deleteDocument.js`, the dashboard's document edit, a form's uploaded evidence and rendered PDF, a message attachment being filed, a distribution's remittances |
 | everything that writes a *folder* | the classified tree's folders are rows too — a client, a property, and the stake that puts a property under a client. Create, rename, retire and delete signal in `clients.js`, `properties.js`, `stakes.js` and `transfers.js`, and so does a joiner setting their own name in `join.js` |
 | `adminFileWrites.js` | signals the owning admin after each of its seven writes |
-| `admins.js` | signals that admin alone: My Files is labelled with their name, and Orphaned is the super admin's |
+| `admins.js` | signals that admin alone: My Files is labelled with their name, and Orphaned is the super admin's. Shared is labelled by the spec and narrowed by no role |
 
 ### Why OAuth rather than the session cookie
 

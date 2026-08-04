@@ -19,13 +19,24 @@ struct RemoteFile: Codable, Sendable, Equatable {
     let version: String
     let uploadDate: String?
 
-    // The three the admin's own tree answers and a document never does — a document has no parent to
+    // The three the file trees answer and a document never does — a document has no parent to
     // report, appearing as it does in every folder whose filter matches it, and it is never a folder
     // and never in a bin. Optional so that a listing from a portal that predates the trash still
     // decodes; `isFolder` and `isTrashed` read a missing value as false, which is what it meant.
     let parent: String?
     let isDir: Bool?
     let trashed: Bool?
+
+    /// Which mount this row hangs from, as that mount's own segment — the only thing about a row
+    /// that says which of the two file trees it is in.
+    ///
+    /// Needed exactly where `parent` is null, meaning the row sits at the top of its tree: the mount
+    /// is addressed by path, and with two of them the null alone no longer says which path.
+    /// Null for a document, which hangs from no mount, and absent from a portal that predates the
+    /// shared folder — where My Files was the only answer, which is what `mountSegment` falls back to.
+    let root: String?
+
+    var mountSegment: String { root ?? ItemIdentity.myFiles }
 
     /// Whether something *above* this row was thrown away, which `/items/:id` answers and a listing
     /// does not need to: a listing learns it once, from the folder it asked for.

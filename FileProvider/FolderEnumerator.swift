@@ -293,7 +293,7 @@ final class BinEnumerator: NSObject, NSFileProviderEnumerator, PolledContainer {
         var snapshot = SnapshotStore.Snapshot()
 
         for entry in try await api.trashed() {
-            let item = FileProviderItem.personal(entry)
+            let item = FileProviderItem.fileRow(entry)
             guard nameable(item, in: describing) else { continue }
             items.append(item)
             snapshot[item.itemIdentifier.rawValue] = "\(entry.version)|\(entry.filename)"

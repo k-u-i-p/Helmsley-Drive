@@ -13,11 +13,15 @@ import Foundation
 /// That is the honest translation: each is exactly the file that folder shows, deleting either
 /// deletes the document, and nothing has to invent a canonical home the portal does not have.
 ///
-/// The admin's own folder is a real filesystem, and a path is exactly the wrong thing to identify
-/// something in it. A row there sits in one directory and can be moved to another, or thrown away
-/// and put back — and if the path were part of the identifier, every one of those would change what
-/// the system thinks the item *is*. So those are identified by the id the server gave them and
-/// nothing else, which no move or trashing touches.
+/// The file trees — the admin's own folder, and the office's shared one — are a real filesystem, and
+/// a path is exactly the wrong thing to identify something in one. A row there sits in one directory
+/// and can be moved to another, or thrown away and put back — and if the path were part of the
+/// identifier, every one of those would change what the system thinks the item *is*. So those are
+/// identified by the id the server gave them and nothing else, which no move or trashing touches.
+///
+/// There are two of those trees and one kind of identity for both. They are one table on the server,
+/// so an id names a row in either without saying which — and nothing here needs to be told, since
+/// every question about where a row sits is the server's to answer anyway.
 ///
 /// Identifiers are opaque to the system but persist across launches and across reboots, so the
 /// encoding below has to stay stable: a change to it orphans everything already synced.
@@ -36,12 +40,13 @@ enum ItemIdentity: Equatable {
     /// all — throws away half of what identifies the item.
     case file(path: [String], documentID: String)
 
-    /// An item in the admin's own folder — a file or a directory, in the bin or not — addressed by
-    /// its id alone.
+    /// A row in one of the file trees — a file or a directory, in the bin or not — addressed by its
+    /// id alone.
     ///
-    /// Its parent is not encoded here because it is not fixed. Where it sits is something only the
-    /// server can answer, and `/api/files/items/:id` is what answers it.
-    case personal(id: String)
+    /// Neither its parent nor which tree it is in is encoded here, because neither is fixed: a row
+    /// can be dragged between My Files and Shared, and both answers change together. Where it sits
+    /// is something only the server can say, and `/api/files/items/:id` is what says it.
+    case fileRow(id: String)
 
     // MARK: - Encoding
 
@@ -50,22 +55,27 @@ enum ItemIdentity: Equatable {
     // separator that must never appear in the data is a bug waiting for the first client called
     // "Smith / Jones". An id is encoded the same way for the same reason — it is opaque, so nothing
     // here may assume which characters it will not contain.
+    // The letters are wire format — they are in every identifier the system has stored — so a
+    // constant may be renamed here but its value never. "P." is the file-row prefix for the reason
+    // the case was once called personal: My Files was the only such tree when it was minted.
     private static let folderPrefix = "D."
     private static let filePrefix = "F."
-    private static let personalPrefix = "P."
+    private static let fileRowPrefix = "P."
 
-    /// The mount's own segment, from the portal's directory spec.
+    /// The mounts' own segments, from the portal's directory spec.
     ///
-    /// Everything below this folder is the admin's own and is identified by id; everything else is
-    /// a view over `documents` and is identified by path. A literal rather than something read off a
-    /// listing because the listing does not say which tree a folder belongs to — and the segment is
-    /// stable by the same contract every entity folder relies on, the folder being *labelled* with
-    /// the admin's name rather than named by it, so that renaming them breaks no held path.
-    static let personalRoot = "My Files"
+    /// Everything below one of these folders is a row and is identified by id; everything else is a
+    /// view over `documents` and is identified by path. Literals rather than something read off a
+    /// listing because the listing does not say which tree a folder belongs to — and the segments are
+    /// stable by the same contract every entity folder relies on, a folder being *labelled* rather
+    /// than named, so that renaming the admin behind My Files breaks no held path.
+    static let myFiles = "My Files"
+    static let shared = "Shared"
+    static let fileMounts = [myFiles, shared]
 
-    /// The mount folder itself, which is the one part of the admin's tree still addressed by path:
-    /// it is where the two trees meet, and the classified half above it has no ids at all.
-    static var personalMount: ItemIdentity { .folder(path: [personalRoot]) }
+    /// A mount folder itself, which is the one part of a file tree still addressed by path: it is
+    /// where the two kinds of tree meet, and the classified half above it has no ids at all.
+    static func mount(_ segment: String) -> ItemIdentity { .folder(path: [segment]) }
 
     var identifier: NSFileProviderItemIdentifier {
         switch self {
@@ -75,8 +85,8 @@ enum ItemIdentity: Equatable {
             return NSFileProviderItemIdentifier(Self.folderPrefix + Self.encode(path))
         case .file(let path, let documentID):
             return NSFileProviderItemIdentifier(Self.filePrefix + Self.encode(path + [documentID]))
-        case .personal(let id):
-            return NSFileProviderItemIdentifier(Self.personalPrefix + Self.encode([id]))
+        case .fileRow(let id):
+            return NSFileProviderItemIdentifier(Self.fileRowPrefix + Self.encode([id]))
         }
     }
 
@@ -84,17 +94,17 @@ enum ItemIdentity: Equatable {
         let raw = identifier.rawValue
         if identifier == .rootContainer {
             self = .root
-        } else if raw.hasPrefix(Self.personalPrefix) {
-            guard let parts = Self.decode(String(raw.dropFirst(Self.personalPrefix.count))),
+        } else if raw.hasPrefix(Self.fileRowPrefix) {
+            guard let parts = Self.decode(String(raw.dropFirst(Self.fileRowPrefix.count))),
                   let id = parts.first else { return nil }
-            self = .personal(id: id)
+            self = .fileRow(id: id)
         } else if raw.hasPrefix(Self.folderPrefix) {
             guard let path = Self.decode(String(raw.dropFirst(Self.folderPrefix.count))) else { return nil }
             self = path.isEmpty ? .root : .folder(path: path)
         } else if raw.hasPrefix(Self.filePrefix) {
             // The last segment is the id and the rest is the path. Nothing is parsed out of the id:
-            // an identifier minted before the admin's own folder existed is a bare number and one
-            // minted since may not be, and both are just the string the server answers to.
+            // an identifier minted before the file trees existed is a bare number and one minted
+            // since may not be, and both are just the string the server answers to.
             guard var parts = Self.decode(String(raw.dropFirst(Self.filePrefix.count))),
                   let documentID = parts.popLast() else { return nil }
             self = .file(path: parts, documentID: documentID)
@@ -118,27 +128,27 @@ enum ItemIdentity: Equatable {
     // MARK: - Navigation
 
     /// The path this identity lists from — a folder's own path, and for a document the folder it was
-    /// seen in. Empty for a personal item, which has no path and is not addressed by one.
+    /// seen in. Empty for a file row, which has no path and is not addressed by one.
     var path: [String] {
         switch self {
         case .root: return []
         case .folder(let path): return path
         case .file(let path, _): return path
-        case .personal: return []
+        case .fileRow: return []
         }
     }
 
     /// Where a read or a write aimed at this identity should be sent.
     var destination: Destination {
-        if case .personal(let id) = self { return .item(id) }
+        if case .fileRow(let id) = self { return .item(id) }
         return .path(path)
     }
 
     /// The container an item hangs under. A document's parent is the folder that listed it; a
     /// folder's is the folder above; the root's is itself, which is what the framework expects.
     ///
-    /// Nil for a personal item, and deliberately so: where one sits is the server's to say, changes
-    /// under it, and is carried on the item itself rather than derived from its name.
+    /// Nil for a file row, and deliberately so: where one sits is the server's to say, changes under
+    /// it, and is carried on the item itself rather than derived from its name.
     var parentIdentifier: NSFileProviderItemIdentifier? {
         switch self {
         case .root:
@@ -147,35 +157,38 @@ enum ItemIdentity: Equatable {
             return path.count <= 1 ? .rootContainer : ItemIdentity.folder(path: path.dropLast()).identifier
         case .file(let path, _):
             return path.isEmpty ? .rootContainer : ItemIdentity.folder(path: path).identifier
-        case .personal:
+        case .fileRow:
             return nil
         }
     }
 
-    // MARK: - The admin's own folder
+    // MARK: - The file trees
 
-    /// Whether this identity is in the admin's own folder — the mount itself, or anything under it.
-    var isPersonal: Bool {
-        if case .personal = self { return true }
-        return path.first == Self.personalRoot
+    /// Whether this identity is in one of the file trees — a mount itself, or anything under it.
+    ///
+    /// Which of the two is not asked, here or anywhere: they behave identically, and every write
+    /// either offers is offered by both.
+    var isFileTree: Bool {
+        if case .fileRow = self { return true }
+        return path.first.map(Self.fileMounts.contains) ?? false
     }
 
     /// The id the item endpoints take, or nil for something they would refuse.
     ///
-    /// The second half of this is the bridge for identifiers minted before personal items were
-    /// addressed by id. Those carry a path, and a folder's last segment is its row id with the
-    /// marker naming its table left off — so it is put back on here, and only here. Anything the
-    /// system has enumerated since arrives as `.personal` and needs none of it.
+    /// The second half of this is the bridge for identifiers minted before file rows were addressed
+    /// by id. Those carry a path, and a folder's last segment is its row id with the marker naming
+    /// its table left off — so it is put back on here, and only here. Anything the system has
+    /// enumerated since arrives as `.fileRow` and needs none of it.
     ///
-    /// Nil for the mount folder itself, which has no id of its own: it is named after the admin and
-    /// follows their name.
-    var personalItemID: String? {
+    /// Nil for a mount folder itself, which has no id of its own: it is a node of the directory spec
+    /// above, labelled with the admin's name or simply "Shared".
+    var fileRowID: String? {
         switch self {
-        case .personal(let id):
+        case .fileRow(let id):
             return id
-        case .file(_, let documentID) where isPersonal:
+        case .file(_, let documentID) where isFileTree:
             return documentID
-        case .folder(let path) where isPersonal:
+        case .folder(let path) where isFileTree:
             return path.count > 1 ? "af" + path[path.count - 1] : nil
         default:
             return nil
@@ -187,26 +200,26 @@ enum ItemIdentity: Equatable {
     /// A one-time step for anything the system still holds by path: the identifier changes once, the
     /// folder re-syncs, and nothing does it again. Everything already addressed by id is returned
     /// unchanged, which is the whole reason a move or a trip through the bin no longer disturbs it.
-    var asPersonal: ItemIdentity {
-        guard let id = personalItemID else { return self }
-        return .personal(id: id)
+    var asFileRow: ItemIdentity {
+        guard let id = fileRowID else { return self }
+        return .fileRow(id: id)
     }
 
     /// What `DELETE /api/files/documents/:id` would take for this item, or nil where there is
     /// nothing a delete could remove. Every file is deletable — that has always been true of a
-    /// document and is true of a personal one — and among folders, only the ones someone made.
+    /// document and is true of a file row — and among folders, only the ones someone made.
     var deletableID: String? {
         if case .file(_, let documentID) = self { return documentID }
-        return personalItemID
+        return fileRowID
     }
 }
 
 /// Where a read or a write is aimed.
 ///
 /// The classified tree has only paths — a folder there is a filter, not a row, and there is nothing
-/// else to call it by. The admin's own tree has ids, and those are what survive the folder being
-/// moved or thrown away. The server takes either and resolves both to the same directory, so nothing
-/// above this has to care which tree it is talking to.
+/// else to call it by. The file trees have ids, and those are what survive the folder being moved or
+/// thrown away. The server takes either and resolves both to the same directory, so nothing above
+/// this has to care which tree it is talking to.
 enum Destination: Sendable, Equatable {
     case path([String])
     case item(String)

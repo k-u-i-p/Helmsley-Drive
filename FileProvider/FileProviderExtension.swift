@@ -58,8 +58,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     /// One item, by identity.
     ///
-    /// Anything in the admin's own tree answers directly, folder or file, in the bin or not: it is a
-    /// row with an id, and `/items/:id` says what it is and where it sits.
+    /// Anything in a file tree answers directly, folder or file, in the bin or not: it is a row with
+    /// an id, and `/items/:id` says what it is and where it sits — including which mount, when it
+    /// sits at the top of one.
     ///
     /// A document answers directly too — a document id is a document id whichever folder is showing
     /// it. A folder of the classified tree cannot: its name and whether it takes uploads are
@@ -79,8 +80,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         case .root:
             item = FileProviderItem.root
 
-        case .personal(let id):
-            item = FileProviderItem.personal(try await api.item(id: id))
+        case .fileRow(let id):
+            item = FileProviderItem.fileRow(try await api.item(id: id))
 
         case .file(let path, let documentID):
             let remote = try await api.document(id: documentID)
@@ -169,12 +170,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         }
 
         if itemTemplate.contentType == .folder {
-            // A folder is a row only in the admin's own branch. In the rest of the tree it is a
-            // filter over `documents` that the directory spec defines, so there is nothing there to
+            // A folder is a row only in the two file trees. In the rest of the tree it is a filter
+            // over `documents` that the directory spec defines, so there is nothing there to
             // create. Refused rather than silently ignored, so a new folder never sits in Finder
             // looking as though it exists.
-            guard parent.isPersonal else {
-                completionHandler(nil, [], false, FileProviderError.unsupported("Folders can only be made in your own folder — the rest of the Helmsley tree is the portal's, and fixed."))
+            guard parent.isFileTree else {
+                completionHandler(nil, [], false, FileProviderError.unsupported("Folders can only be made in your own folder or in Shared — the rest of the Helmsley tree is the portal's, and fixed."))
                 return progress
             }
             return makeFolder(in: parent, named: itemTemplate.filename, progress: progress, completionHandler: completionHandler)
@@ -257,16 +258,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             return progress
         }
 
-        // Renaming and moving reach the server only inside the admin's own folder. A document's
+        // Renaming and moving reach the server only inside the file trees. A document's
         // title, its type and its links are the filing an admin chose in the portal, which refuses
         // to refile some of them outright (a compliance document, for one) — and it has no path to
         // move one along in any case. Anything else Finder wants to record — a tag, a last-used
         // date — is local, so it is accepted unchanged.
         let relocation = changedFields.intersection([.filename, .parentItemIdentifier])
-        guard let itemID = identity.personalItemID else {
+        guard let itemID = identity.fileRowID else {
             guard relocation.isEmpty else {
-                completionHandler(nil, [], false, FileProviderError.unsupported(identity.isPersonal
-                    ? "Your own folder is named after you and follows your name — it cannot be renamed or moved."
+                completionHandler(nil, [], false, FileProviderError.unsupported(identity.isFileTree
+                    ? "A folder the portal defines cannot be renamed or moved — your own is named after you, and Shared is named in the directory itself."
                     : "Helmsley documents cannot be renamed or moved. Change the filing in the portal instead."))
                 return progress
             }
@@ -277,9 +278,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         }
 
         // The identifier the answer comes back under. Everything the system has enumerated since
-        // personal items became id-addressed already is one; anything still held by path becomes one
+        // file rows became id-addressed already is one; anything still held by path becomes one
         // here, once, and the folder re-syncs around it.
-        let settled = identity.asPersonal
+        let settled = identity.asFileRow
         let target = item.parentItemIdentifier
         let work = Task {
             do {
@@ -287,7 +288,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 // one handed over describes what it should become — its parentItemIdentifier is the
                 // destination — so the folder being left behind has to be looked up, and it is what
                 // tells a restore apart from an ordinary move.
-                let source = FileProviderItem.personal(try await api.item(id: itemID)).parentItemIdentifier
+                let source = FileProviderItem.fileRow(try await api.item(id: itemID)).parentItemIdentifier
 
                 if relocation.contains(.parentItemIdentifier) {
                     try await self.reparent(itemID, from: source, to: target)
@@ -331,8 +332,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             return try await api.trash(id: itemID)
         }
 
-        guard let destination = ItemIdentity(target), destination.isPersonal else {
-            throw FileProviderError.unsupported("An item can only be moved within your own folder.")
+        // Either file tree is a destination, including the other one: dragging something into
+        // Shared is how it gets there, and dragging it back out is the undo. The server moves the
+        // whole subtree across in one go.
+        guard let destination = ItemIdentity(target), destination.isFileTree else {
+            throw FileProviderError.unsupported("An item can only be moved within your own folder or Shared.")
         }
         if source == .trashContainer {
             // Restored and relocated in one step, because that is what dragging something out of the
