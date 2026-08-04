@@ -336,7 +336,9 @@ All in `../Helmsley`:
 | `backend/routes/fileProvider.js` | `POST`/`DELETE /push-token` |
 | `backend/scripts/init-db.js` | `file_provider_devices` |
 | everything that writes a document | signals afterwards: `finaliseUpload.js`, `deleteDocument.js`, the dashboard's document edit, a form's uploaded evidence and rendered PDF, a message attachment being filed, a distribution's remittances |
+| everything that writes a *folder* | the classified tree's folders are rows too — a client, a property, and the stake that puts a property under a client. Create, rename, retire and delete signal in `clients.js`, `properties.js`, `stakes.js` and `transfers.js`, and so does a joiner setting their own name in `join.js` |
 | `adminFileWrites.js` | signals the owning admin after each of its seven writes |
+| `admins.js` | signals that admin alone: My Files is labelled with their name, and Orphaned is the super admin's |
 
 ### Why OAuth rather than the session cookie
 
