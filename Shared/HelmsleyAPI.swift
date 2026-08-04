@@ -284,6 +284,39 @@ struct HelmsleyAPI: Sendable {
         return wrapper.name
     }
 
+    // MARK: Push
+
+    /// Says where this device can be reached when the tree moves, and answers whether the portal is
+    /// in a position to reach it — which is not the same question. A portal with no APNs key
+    /// configured takes the token and says so, and the extension goes on asking on its short timer
+    /// rather than waiting for a push that will never come.
+    ///
+    /// The environment and the platform ride along because the server cannot work either out: which
+    /// APNs host a token belongs to follows how the app was signed, and nothing in the token says.
+    @discardableResult
+    func registerPushToken(_ token: String, domain: String) async throws -> Bool {
+        struct Wrapper: Decodable { let push: Bool? }
+        let wrapper: Wrapper = try await post(base.appendingPathComponent("push-token"), body: [
+            "token": token,
+            "domain": domain,
+            "environment": Configuration.pushEnvironment,
+            "platform": Configuration.platformName,
+            "bundleId": Bundle.main.bundleIdentifier ?? "",
+        ])
+        return wrapper.push ?? false
+    }
+
+    /// Withdraws it. Sent when the system invalidates the token, and when the volume is unmounted by
+    /// signing out — the only two moments anything here knows that pushing this device has stopped
+    /// meaning anything. APNs itself only reports a token dead once the app is uninstalled.
+    func forgetPushToken(_ token: String) async throws {
+        var request = URLRequest(url: base.appendingPathComponent("push-token"))
+        request.httpMethod = "DELETE"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["token": token])
+        _ = try await send(request) as Empty
+    }
+
     // MARK: Plumbing
 
     private struct Empty: Decodable {}

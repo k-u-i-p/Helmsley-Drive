@@ -31,12 +31,13 @@ def oid(name):
 
 # The engine, compiled into all four targets.
 SHARED = ["Configuration.swift", "Log.swift", "TokenStore.swift", "OAuth.swift", "HelmsleyAPI.swift",
-          "ItemIdentity.swift"]
+          "ItemIdentity.swift", "PushTokenStore.swift"]
 # The container apps' shared logic, compiled into the two app targets only. Not the extensions':
 # signing in is interactive, and `UIApplication.shared` — which presents the sheet — is barred
 # outright in an iOS app extension.
 APP_SHARED = ["AppModel.swift", "SignIn.swift"]
-ENGINE = ["FileProviderExtension.swift", "FileProviderItem.swift", "FolderEnumerator.swift", "SnapshotStore.swift"]
+ENGINE = ["FileProviderExtension.swift", "FileProviderItem.swift", "FolderEnumerator.swift", "SnapshotStore.swift",
+          "ChangePoller.swift", "PushRegistrar.swift"]
 MAC_UI = ["HelmsleyDriveApp.swift", "ContentView.swift"]
 IOS_UI = ["HelmsleyDriveApp.swift", "ContentView.swift"]
 

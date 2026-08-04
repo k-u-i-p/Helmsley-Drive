@@ -73,6 +73,14 @@ final class AppModel: ObservableObject {
 
     func disconnect() async {
         await perform {
+            // Before either, because it is the one step that still needs the credential: the portal
+            // authenticates the withdrawal as it authenticated the registration. Best-effort, since
+            // a token left behind costs a push nobody sees and is not worth failing a sign-out over.
+            if let token = PushTokenStore.token {
+                try? await HelmsleyAPI.shared.forgetPushToken(token)
+                PushTokenStore.token = nil
+            }
+
             // The domain first: removing it takes the volume out of Finder and discards whatever
             // the system had cached of it. Doing it after clearing the credential would leave a
             // mounted volume that could not answer a single request.

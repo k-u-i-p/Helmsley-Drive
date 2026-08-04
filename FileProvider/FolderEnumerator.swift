@@ -21,11 +21,11 @@ private func nameable(_ item: FileProviderItem, in container: String) -> Bool {
 /// (`SnapshotStore`). That is enough to be correct: every item carries a version derived from its
 /// content hash, so an edit, an addition and a removal are all visible in the diff.
 ///
-/// What it cannot be is instantaneous. The system asks for changes when it is told there are some,
-/// and nothing about a document filed in the dashboard reaches this process on its own — so a live
-/// enumerator registers with `ChangePoller`, which asks the server on a timer and signals when the
-/// answer stops matching. That is what keeps an open folder current; a write made through Finder
-/// signals directly and does not wait for it.
+/// The system asks for changes only when it is told there are some, and nothing about a document
+/// filed in the dashboard reaches this process on its own — so a live enumerator registers with
+/// `ChangePoller`, which is woken by the portal's push and falls back to asking on a slow timer. That
+/// is what keeps an open folder current; a write made through Finder signals directly and waits for
+/// neither.
 final class FolderEnumerator: NSObject, NSFileProviderEnumerator, PolledContainer {
 
     private let identity: ItemIdentity
@@ -231,6 +231,19 @@ final class BinEnumerator: NSObject, NSFileProviderEnumerator, PolledContainer {
     }
 
     func enumerateChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
+        // Where a push lands. A file provider push names the working set and nothing else — the
+        // system signals it on the extension's behalf and never hands the payload to any of this code
+        // — so this call is the whole of what arrives, and what it means is "something moved, though
+        // not necessarily in here". The folders someone has open are asked about separately, and at
+        // once: the poller knows which they are, and the push could not have said.
+        //
+        // In a task of its own, so the bin's own answer is not held up behind a listing per open
+        // folder. Signalling the trash also signals the working set, so this runs on a change made
+        // through Finder too — where the round finds every folder in step and does nothing.
+        if container == .workingSet {
+            Task { [poller] in await poller.checkNow() }
+        }
+
         Task {
             guard let previous = await SnapshotStore.shared.snapshot(matching: anchor, for: container) else {
                 Log.enumeration.info("the \(self.describing, privacy: .public) was asked for changes from an anchor it no longer holds — asking for a full listing")

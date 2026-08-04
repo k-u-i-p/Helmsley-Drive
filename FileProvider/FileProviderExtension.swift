@@ -14,9 +14,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     private let signal: ChangeSignal
     private let poller: ChangePoller
 
+    /// Held for as long as the extension is loaded, because it is what owns the `PKPushRegistry`:
+    /// nothing else refers to it, and a registry nobody holds stops being the delegate's.
+    private let push: PushRegistrar
+
     required init(domain: NSFileProviderDomain) {
         self.signal = ChangeSignal(domain: domain)
         self.poller = ChangePoller(signal: signal)
+        // Registering here means it happens whenever anything touches the volume, which is as often
+        // as this class is made — and the token the portal holds is refreshed by the same act.
+        self.push = PushRegistrar(domain: domain, poller: poller)
         super.init()
         Log.provider.info("extension loaded for domain \(domain.identifier.rawValue, privacy: .public), portal \(Configuration.baseURL.absoluteString, privacy: .public)")
     }

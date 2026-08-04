@@ -13,69 +13,75 @@
 		HD0000000000000000000007 /* OAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000008 /* OAuth.swift */; };
 		HD0000000000000000000009 /* HelmsleyAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000A /* HelmsleyAPI.swift */; };
 		HD000000000000000000000B /* ItemIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000C /* ItemIdentity.swift */; };
-		HD000000000000000000000D /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000E /* AppModel.swift */; };
-		HD000000000000000000000F /* SignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000010 /* SignIn.swift */; };
-		HD0000000000000000000011 /* HelmsleyDriveApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000012 /* HelmsleyDriveApp.swift */; };
-		HD0000000000000000000013 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000014 /* ContentView.swift */; };
-		HD0000000000000000000015 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000016 /* Assets.xcassets */; };
-		HD0000000000000000000017 /* Configuration.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000002 /* Configuration.swift */; };
-		HD0000000000000000000018 /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000004 /* Log.swift */; };
-		HD0000000000000000000019 /* TokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000006 /* TokenStore.swift */; };
-		HD000000000000000000001A /* OAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000008 /* OAuth.swift */; };
-		HD000000000000000000001B /* HelmsleyAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000A /* HelmsleyAPI.swift */; };
-		HD000000000000000000001C /* ItemIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000C /* ItemIdentity.swift */; };
-		HD000000000000000000001D /* FileProviderExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000001E /* FileProviderExtension.swift */; };
-		HD000000000000000000001F /* FileProviderItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000020 /* FileProviderItem.swift */; };
-		HD0000000000000000000021 /* FolderEnumerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000022 /* FolderEnumerator.swift */; };
-		HD0000000000000000000023 /* SnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000024 /* SnapshotStore.swift */; };
-		HD000000000000000000007E /* ChangePoller.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000007D /* ChangePoller.swift */; };
-		HD0000000000000000000025 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000026 /* Assets.xcassets */; };
-		HD0000000000000000000027 /* Configuration.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000002 /* Configuration.swift */; };
-		HD0000000000000000000028 /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000004 /* Log.swift */; };
-		HD0000000000000000000029 /* TokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000006 /* TokenStore.swift */; };
-		HD000000000000000000002A /* OAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000008 /* OAuth.swift */; };
-		HD000000000000000000002B /* HelmsleyAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000A /* HelmsleyAPI.swift */; };
-		HD000000000000000000002C /* ItemIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000C /* ItemIdentity.swift */; };
-		HD000000000000000000002D /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000E /* AppModel.swift */; };
-		HD000000000000000000002E /* SignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000010 /* SignIn.swift */; };
-		HD000000000000000000002F /* HelmsleyDriveApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000030 /* HelmsleyDriveApp.swift */; };
-		HD0000000000000000000031 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000032 /* ContentView.swift */; };
-		HD0000000000000000000033 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000034 /* Assets.xcassets */; };
-		HD0000000000000000000035 /* Configuration.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000002 /* Configuration.swift */; };
-		HD0000000000000000000036 /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000004 /* Log.swift */; };
-		HD0000000000000000000037 /* TokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000006 /* TokenStore.swift */; };
-		HD0000000000000000000038 /* OAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000008 /* OAuth.swift */; };
-		HD0000000000000000000039 /* HelmsleyAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000A /* HelmsleyAPI.swift */; };
-		HD000000000000000000003A /* ItemIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000C /* ItemIdentity.swift */; };
-		HD000000000000000000003B /* FileProviderExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000001E /* FileProviderExtension.swift */; };
-		HD000000000000000000003C /* FileProviderItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000020 /* FileProviderItem.swift */; };
-		HD000000000000000000003D /* FolderEnumerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000022 /* FolderEnumerator.swift */; };
-		HD000000000000000000003E /* SnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000024 /* SnapshotStore.swift */; };
-		HD000000000000000000007F /* ChangePoller.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000007D /* ChangePoller.swift */; };
-		HD000000000000000000003F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000040 /* Assets.xcassets */; };
-		HD0000000000000000000041 /* HelmsleyFileProvider.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000042 /* HelmsleyFileProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		HD0000000000000000000043 /* HelmsleyFileProvider-iOS.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000044 /* HelmsleyFileProvider-iOS.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		HD000000000000000000000D /* PushTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000E /* PushTokenStore.swift */; };
+		HD000000000000000000000F /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000010 /* AppModel.swift */; };
+		HD0000000000000000000011 /* SignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000012 /* SignIn.swift */; };
+		HD0000000000000000000013 /* HelmsleyDriveApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000014 /* HelmsleyDriveApp.swift */; };
+		HD0000000000000000000015 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000016 /* ContentView.swift */; };
+		HD0000000000000000000017 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000018 /* Assets.xcassets */; };
+		HD0000000000000000000019 /* Configuration.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000002 /* Configuration.swift */; };
+		HD000000000000000000001A /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000004 /* Log.swift */; };
+		HD000000000000000000001B /* TokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000006 /* TokenStore.swift */; };
+		HD000000000000000000001C /* OAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000008 /* OAuth.swift */; };
+		HD000000000000000000001D /* HelmsleyAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000A /* HelmsleyAPI.swift */; };
+		HD000000000000000000001E /* ItemIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000C /* ItemIdentity.swift */; };
+		HD000000000000000000001F /* PushTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000E /* PushTokenStore.swift */; };
+		HD0000000000000000000020 /* FileProviderExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000021 /* FileProviderExtension.swift */; };
+		HD0000000000000000000022 /* FileProviderItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000023 /* FileProviderItem.swift */; };
+		HD0000000000000000000024 /* FolderEnumerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000025 /* FolderEnumerator.swift */; };
+		HD0000000000000000000026 /* SnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000027 /* SnapshotStore.swift */; };
+		HD0000000000000000000028 /* ChangePoller.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000029 /* ChangePoller.swift */; };
+		HD000000000000000000002A /* PushRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000002B /* PushRegistrar.swift */; };
+		HD000000000000000000002C /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000002D /* Assets.xcassets */; };
+		HD000000000000000000002E /* Configuration.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000002 /* Configuration.swift */; };
+		HD000000000000000000002F /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000004 /* Log.swift */; };
+		HD0000000000000000000030 /* TokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000006 /* TokenStore.swift */; };
+		HD0000000000000000000031 /* OAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000008 /* OAuth.swift */; };
+		HD0000000000000000000032 /* HelmsleyAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000A /* HelmsleyAPI.swift */; };
+		HD0000000000000000000033 /* ItemIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000C /* ItemIdentity.swift */; };
+		HD0000000000000000000034 /* PushTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000E /* PushTokenStore.swift */; };
+		HD0000000000000000000035 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000010 /* AppModel.swift */; };
+		HD0000000000000000000036 /* SignIn.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000012 /* SignIn.swift */; };
+		HD0000000000000000000037 /* HelmsleyDriveApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000038 /* HelmsleyDriveApp.swift */; };
+		HD0000000000000000000039 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000003A /* ContentView.swift */; };
+		HD000000000000000000003B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000003C /* Assets.xcassets */; };
+		HD000000000000000000003D /* Configuration.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000002 /* Configuration.swift */; };
+		HD000000000000000000003E /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000004 /* Log.swift */; };
+		HD000000000000000000003F /* TokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000006 /* TokenStore.swift */; };
+		HD0000000000000000000040 /* OAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000008 /* OAuth.swift */; };
+		HD0000000000000000000041 /* HelmsleyAPI.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000A /* HelmsleyAPI.swift */; };
+		HD0000000000000000000042 /* ItemIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000C /* ItemIdentity.swift */; };
+		HD0000000000000000000043 /* PushTokenStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000000E /* PushTokenStore.swift */; };
+		HD0000000000000000000044 /* FileProviderExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000021 /* FileProviderExtension.swift */; };
+		HD0000000000000000000045 /* FileProviderItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000023 /* FileProviderItem.swift */; };
+		HD0000000000000000000046 /* FolderEnumerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000025 /* FolderEnumerator.swift */; };
+		HD0000000000000000000047 /* SnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000027 /* SnapshotStore.swift */; };
+		HD0000000000000000000048 /* ChangePoller.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000029 /* ChangePoller.swift */; };
+		HD0000000000000000000049 /* PushRegistrar.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000002B /* PushRegistrar.swift */; };
+		HD000000000000000000004A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000004B /* Assets.xcassets */; };
+		HD000000000000000000004C /* HelmsleyFileProvider.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = HD000000000000000000004D /* HelmsleyFileProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		HD000000000000000000004E /* HelmsleyFileProvider-iOS.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = HD000000000000000000004F /* HelmsleyFileProvider-iOS.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
-		HD0000000000000000000045 /* Embed Foundation Extensions */ = {
+		HD0000000000000000000050 /* Embed Foundation Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				HD0000000000000000000041 /* HelmsleyFileProvider.appex in Embed Foundation Extensions */,
+				HD000000000000000000004C /* HelmsleyFileProvider.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		HD0000000000000000000046 /* Embed Foundation Extensions */ = {
+		HD0000000000000000000051 /* Embed Foundation Extensions */ = {
 			isa = PBXCopyFilesBuildPhase;
 			buildActionMask = 2147483647;
 			dstPath = "";
 			dstSubfolderSpec = 13;
 			files = (
-				HD0000000000000000000043 /* HelmsleyFileProvider-iOS.appex in Embed Foundation Extensions */,
+				HD000000000000000000004E /* HelmsleyFileProvider-iOS.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -89,37 +95,39 @@
 		HD0000000000000000000008 /* OAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuth.swift; sourceTree = "<group>"; };
 		HD000000000000000000000A /* HelmsleyAPI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelmsleyAPI.swift; sourceTree = "<group>"; };
 		HD000000000000000000000C /* ItemIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ItemIdentity.swift; sourceTree = "<group>"; };
-		HD000000000000000000000E /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
-		HD0000000000000000000010 /* SignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignIn.swift; sourceTree = "<group>"; };
-		HD0000000000000000000012 /* HelmsleyDriveApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelmsleyDriveApp.swift; sourceTree = "<group>"; };
-		HD0000000000000000000014 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
-		HD0000000000000000000016 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		HD0000000000000000000047 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		HD0000000000000000000048 /* HelmsleyDrive.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HelmsleyDrive.entitlements; sourceTree = "<group>"; };
-		HD000000000000000000001E /* FileProviderExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderExtension.swift; sourceTree = "<group>"; };
-		HD0000000000000000000020 /* FileProviderItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderItem.swift; sourceTree = "<group>"; };
-		HD0000000000000000000022 /* FolderEnumerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderEnumerator.swift; sourceTree = "<group>"; };
-		HD0000000000000000000024 /* SnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotStore.swift; sourceTree = "<group>"; };
-		HD000000000000000000007D /* ChangePoller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChangePoller.swift; sourceTree = "<group>"; };
-		HD0000000000000000000026 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		HD0000000000000000000049 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		HD000000000000000000004A /* FileProvider.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FileProvider.entitlements; sourceTree = "<group>"; };
-		HD0000000000000000000030 /* HelmsleyDriveApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelmsleyDriveApp.swift; sourceTree = "<group>"; };
-		HD0000000000000000000032 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
-		HD0000000000000000000034 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		HD000000000000000000004B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		HD000000000000000000004C /* HelmsleyDrive-iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HelmsleyDrive-iOS.entitlements; sourceTree = "<group>"; };
-		HD0000000000000000000040 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		HD000000000000000000004D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		HD000000000000000000004E /* FileProvider-iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FileProvider-iOS.entitlements; sourceTree = "<group>"; };
-		HD000000000000000000004F /* HelmsleyDrive.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "HelmsleyDrive.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		HD0000000000000000000042 /* HelmsleyFileProvider.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "HelmsleyFileProvider.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
-		HD0000000000000000000050 /* HelmsleyDrive-iOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "HelmsleyDrive-iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		HD0000000000000000000044 /* HelmsleyFileProvider-iOS.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "HelmsleyFileProvider-iOS.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		HD000000000000000000000E /* PushTokenStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushTokenStore.swift; sourceTree = "<group>"; };
+		HD0000000000000000000010 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		HD0000000000000000000012 /* SignIn.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SignIn.swift; sourceTree = "<group>"; };
+		HD0000000000000000000014 /* HelmsleyDriveApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelmsleyDriveApp.swift; sourceTree = "<group>"; };
+		HD0000000000000000000016 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		HD0000000000000000000018 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		HD0000000000000000000052 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		HD0000000000000000000053 /* HelmsleyDrive.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HelmsleyDrive.entitlements; sourceTree = "<group>"; };
+		HD0000000000000000000021 /* FileProviderExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderExtension.swift; sourceTree = "<group>"; };
+		HD0000000000000000000023 /* FileProviderItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderItem.swift; sourceTree = "<group>"; };
+		HD0000000000000000000025 /* FolderEnumerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderEnumerator.swift; sourceTree = "<group>"; };
+		HD0000000000000000000027 /* SnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotStore.swift; sourceTree = "<group>"; };
+		HD0000000000000000000029 /* ChangePoller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChangePoller.swift; sourceTree = "<group>"; };
+		HD000000000000000000002B /* PushRegistrar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRegistrar.swift; sourceTree = "<group>"; };
+		HD000000000000000000002D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		HD0000000000000000000054 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		HD0000000000000000000055 /* FileProvider.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FileProvider.entitlements; sourceTree = "<group>"; };
+		HD0000000000000000000038 /* HelmsleyDriveApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HelmsleyDriveApp.swift; sourceTree = "<group>"; };
+		HD000000000000000000003A /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		HD000000000000000000003C /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		HD0000000000000000000056 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		HD0000000000000000000057 /* HelmsleyDrive-iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = HelmsleyDrive-iOS.entitlements; sourceTree = "<group>"; };
+		HD000000000000000000004B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		HD0000000000000000000058 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		HD0000000000000000000059 /* FileProvider-iOS.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FileProvider-iOS.entitlements; sourceTree = "<group>"; };
+		HD000000000000000000005A /* HelmsleyDrive.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "HelmsleyDrive.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		HD000000000000000000004D /* HelmsleyFileProvider.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "HelmsleyFileProvider.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		HD000000000000000000005B /* HelmsleyDrive-iOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "HelmsleyDrive-iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		HD000000000000000000004F /* HelmsleyFileProvider-iOS.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "HelmsleyFileProvider-iOS.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
-		HD0000000000000000000051 /* Shared */ = {
+		HD000000000000000000005C /* Shared */ = {
 			isa = PBXGroup;
 			children = (
 				HD0000000000000000000002 /* Configuration.swift */,
@@ -128,117 +136,119 @@
 				HD0000000000000000000008 /* OAuth.swift */,
 				HD000000000000000000000A /* HelmsleyAPI.swift */,
 				HD000000000000000000000C /* ItemIdentity.swift */,
+				HD000000000000000000000E /* PushTokenStore.swift */,
 			);
 			path = "Shared";
 			sourceTree = "<group>";
 		};
-		HD0000000000000000000052 /* AppShared */ = {
+		HD000000000000000000005D /* AppShared */ = {
 			isa = PBXGroup;
 			children = (
-				HD000000000000000000000E /* AppModel.swift */,
-				HD0000000000000000000010 /* SignIn.swift */,
+				HD0000000000000000000010 /* AppModel.swift */,
+				HD0000000000000000000012 /* SignIn.swift */,
 			);
 			path = "AppShared";
 			sourceTree = "<group>";
 		};
-		HD0000000000000000000053 /* HelmsleyDrive */ = {
+		HD000000000000000000005E /* HelmsleyDrive */ = {
 			isa = PBXGroup;
 			children = (
-				HD0000000000000000000012 /* HelmsleyDriveApp.swift */,
-				HD0000000000000000000014 /* ContentView.swift */,
-				HD0000000000000000000016 /* Assets.xcassets */,
-				HD0000000000000000000047 /* Info.plist */,
-				HD0000000000000000000048 /* HelmsleyDrive.entitlements */,
+				HD0000000000000000000014 /* HelmsleyDriveApp.swift */,
+				HD0000000000000000000016 /* ContentView.swift */,
+				HD0000000000000000000018 /* Assets.xcassets */,
+				HD0000000000000000000052 /* Info.plist */,
+				HD0000000000000000000053 /* HelmsleyDrive.entitlements */,
 			);
 			path = "HelmsleyDrive";
 			sourceTree = "<group>";
 		};
-		HD0000000000000000000054 /* FileProvider */ = {
+		HD000000000000000000005F /* FileProvider */ = {
 			isa = PBXGroup;
 			children = (
-				HD000000000000000000001E /* FileProviderExtension.swift */,
-				HD0000000000000000000020 /* FileProviderItem.swift */,
-				HD0000000000000000000022 /* FolderEnumerator.swift */,
-				HD0000000000000000000024 /* SnapshotStore.swift */,
-				HD000000000000000000007D /* ChangePoller.swift */,
-				HD0000000000000000000026 /* Assets.xcassets */,
-				HD0000000000000000000049 /* Info.plist */,
-				HD000000000000000000004A /* FileProvider.entitlements */,
+				HD0000000000000000000021 /* FileProviderExtension.swift */,
+				HD0000000000000000000023 /* FileProviderItem.swift */,
+				HD0000000000000000000025 /* FolderEnumerator.swift */,
+				HD0000000000000000000027 /* SnapshotStore.swift */,
+				HD0000000000000000000029 /* ChangePoller.swift */,
+				HD000000000000000000002B /* PushRegistrar.swift */,
+				HD000000000000000000002D /* Assets.xcassets */,
+				HD0000000000000000000054 /* Info.plist */,
+				HD0000000000000000000055 /* FileProvider.entitlements */,
 			);
 			path = "FileProvider";
 			sourceTree = "<group>";
 		};
-		HD0000000000000000000055 /* HelmsleyDrive-iOS */ = {
+		HD0000000000000000000060 /* HelmsleyDrive-iOS */ = {
 			isa = PBXGroup;
 			children = (
-				HD0000000000000000000030 /* HelmsleyDriveApp.swift */,
-				HD0000000000000000000032 /* ContentView.swift */,
-				HD0000000000000000000034 /* Assets.xcassets */,
-				HD000000000000000000004B /* Info.plist */,
-				HD000000000000000000004C /* HelmsleyDrive-iOS.entitlements */,
+				HD0000000000000000000038 /* HelmsleyDriveApp.swift */,
+				HD000000000000000000003A /* ContentView.swift */,
+				HD000000000000000000003C /* Assets.xcassets */,
+				HD0000000000000000000056 /* Info.plist */,
+				HD0000000000000000000057 /* HelmsleyDrive-iOS.entitlements */,
 			);
 			path = "HelmsleyDrive-iOS";
 			sourceTree = "<group>";
 		};
-		HD0000000000000000000056 /* FileProvider-iOS */ = {
+		HD0000000000000000000061 /* FileProvider-iOS */ = {
 			isa = PBXGroup;
 			children = (
-				HD0000000000000000000040 /* Assets.xcassets */,
-				HD000000000000000000004D /* Info.plist */,
-				HD000000000000000000004E /* FileProvider-iOS.entitlements */,
+				HD000000000000000000004B /* Assets.xcassets */,
+				HD0000000000000000000058 /* Info.plist */,
+				HD0000000000000000000059 /* FileProvider-iOS.entitlements */,
 			);
 			path = "FileProvider-iOS";
 			sourceTree = "<group>";
 		};
-		HD0000000000000000000057 /* Products */ = {
+		HD0000000000000000000062 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				HD000000000000000000004F /* HelmsleyDrive.app */,
-				HD0000000000000000000042 /* HelmsleyFileProvider.appex */,
-				HD0000000000000000000050 /* HelmsleyDrive-iOS.app */,
-				HD0000000000000000000044 /* HelmsleyFileProvider-iOS.appex */,
+				HD000000000000000000005A /* HelmsleyDrive.app */,
+				HD000000000000000000004D /* HelmsleyFileProvider.appex */,
+				HD000000000000000000005B /* HelmsleyDrive-iOS.app */,
+				HD000000000000000000004F /* HelmsleyFileProvider-iOS.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
 		};
-		HD0000000000000000000058 /*  */ = {
+		HD0000000000000000000063 /*  */ = {
 			isa = PBXGroup;
 			children = (
-				HD0000000000000000000051 /* Shared */,
-				HD0000000000000000000052 /* AppShared */,
-				HD0000000000000000000053 /* HelmsleyDrive */,
-				HD0000000000000000000054 /* FileProvider */,
-				HD0000000000000000000055 /* HelmsleyDrive-iOS */,
-				HD0000000000000000000056 /* FileProvider-iOS */,
-				HD0000000000000000000057 /* Products */,
+				HD000000000000000000005C /* Shared */,
+				HD000000000000000000005D /* AppShared */,
+				HD000000000000000000005E /* HelmsleyDrive */,
+				HD000000000000000000005F /* FileProvider */,
+				HD0000000000000000000060 /* HelmsleyDrive-iOS */,
+				HD0000000000000000000061 /* FileProvider-iOS */,
+				HD0000000000000000000062 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		HD0000000000000000000059 /* Frameworks */ = {
+		HD0000000000000000000064 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		HD000000000000000000005A /* Frameworks */ = {
+		HD0000000000000000000065 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		HD000000000000000000005B /* Frameworks */ = {
+		HD0000000000000000000066 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		HD000000000000000000005C /* Frameworks */ = {
+		HD0000000000000000000067 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -248,42 +258,42 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXResourcesBuildPhase section */
-		HD000000000000000000005D /* Resources */ = {
+		HD0000000000000000000068 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				HD0000000000000000000015,
+				HD0000000000000000000017,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		HD000000000000000000005E /* Resources */ = {
+		HD0000000000000000000069 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				HD0000000000000000000025,
+				HD000000000000000000002C,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		HD000000000000000000005F /* Resources */ = {
+		HD000000000000000000006A /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				HD0000000000000000000033,
+				HD000000000000000000003B,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		HD0000000000000000000060 /* Resources */ = {
+		HD000000000000000000006B /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				HD000000000000000000003F,
+				HD000000000000000000004A,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		HD0000000000000000000061 /* Sources */ = {
+		HD000000000000000000006C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -297,121 +307,127 @@
 				HD000000000000000000000F,
 				HD0000000000000000000011,
 				HD0000000000000000000013,
+				HD0000000000000000000015,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		HD0000000000000000000062 /* Sources */ = {
+		HD000000000000000000006D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				HD0000000000000000000017,
-				HD0000000000000000000018,
 				HD0000000000000000000019,
 				HD000000000000000000001A,
 				HD000000000000000000001B,
 				HD000000000000000000001C,
 				HD000000000000000000001D,
+				HD000000000000000000001E,
 				HD000000000000000000001F,
-				HD0000000000000000000021,
-				HD000000000000000000007E,
-				HD0000000000000000000023,
+				HD0000000000000000000020,
+				HD0000000000000000000022,
+				HD0000000000000000000024,
+				HD0000000000000000000026,
+				HD0000000000000000000028,
+				HD000000000000000000002A,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		HD0000000000000000000063 /* Sources */ = {
+		HD000000000000000000006E /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				HD0000000000000000000027,
-				HD0000000000000000000028,
-				HD0000000000000000000029,
-				HD000000000000000000002A,
-				HD000000000000000000002B,
-				HD000000000000000000002C,
-				HD000000000000000000002D,
 				HD000000000000000000002E,
 				HD000000000000000000002F,
+				HD0000000000000000000030,
 				HD0000000000000000000031,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		HD0000000000000000000064 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
+				HD0000000000000000000032,
+				HD0000000000000000000033,
+				HD0000000000000000000034,
 				HD0000000000000000000035,
 				HD0000000000000000000036,
 				HD0000000000000000000037,
-				HD0000000000000000000038,
 				HD0000000000000000000039,
-				HD000000000000000000003A,
-				HD000000000000000000003B,
-				HD000000000000000000003C,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		HD000000000000000000006F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 				HD000000000000000000003D,
-				HD000000000000000000007F,
 				HD000000000000000000003E,
+				HD000000000000000000003F,
+				HD0000000000000000000040,
+				HD0000000000000000000041,
+				HD0000000000000000000042,
+				HD0000000000000000000043,
+				HD0000000000000000000044,
+				HD0000000000000000000045,
+				HD0000000000000000000046,
+				HD0000000000000000000047,
+				HD0000000000000000000048,
+				HD0000000000000000000049,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXContainerItemProxy section */
-		HD0000000000000000000065 /* PBXContainerItemProxy */ = {
+		HD0000000000000000000070 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
-			containerPortal = HD0000000000000000000066 /* Project object */;
+			containerPortal = HD0000000000000000000071 /* Project object */;
 			proxyType = 1;
-			remoteGlobalIDString = HD0000000000000000000067;
+			remoteGlobalIDString = HD0000000000000000000072;
 			remoteInfo = "HelmsleyFileProvider";
 		};
-		HD0000000000000000000068 /* PBXContainerItemProxy */ = {
+		HD0000000000000000000073 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
-			containerPortal = HD0000000000000000000066 /* Project object */;
+			containerPortal = HD0000000000000000000071 /* Project object */;
 			proxyType = 1;
-			remoteGlobalIDString = HD0000000000000000000069;
+			remoteGlobalIDString = HD0000000000000000000074;
 			remoteInfo = "HelmsleyFileProvider-iOS";
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXTargetDependency section */
-		HD000000000000000000006A /* PBXTargetDependency */ = {
+		HD0000000000000000000075 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = HD0000000000000000000067 /* HelmsleyFileProvider */;
-			targetProxy = HD0000000000000000000065 /* PBXContainerItemProxy */;
+			target = HD0000000000000000000072 /* HelmsleyFileProvider */;
+			targetProxy = HD0000000000000000000070 /* PBXContainerItemProxy */;
 		};
-		HD000000000000000000006B /* PBXTargetDependency */ = {
+		HD0000000000000000000076 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = HD0000000000000000000069 /* HelmsleyFileProvider-iOS */;
-			targetProxy = HD0000000000000000000068 /* PBXContainerItemProxy */;
+			target = HD0000000000000000000074 /* HelmsleyFileProvider-iOS */;
+			targetProxy = HD0000000000000000000073 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
 /* Begin PBXNativeTarget section */
-		HD000000000000000000006C /* HelmsleyDrive */ = {
+		HD0000000000000000000077 /* HelmsleyDrive */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = HD000000000000000000006D /* Build configuration list for PBXNativeTarget "HelmsleyDrive" */;
+			buildConfigurationList = HD0000000000000000000078 /* Build configuration list for PBXNativeTarget "HelmsleyDrive" */;
 			buildPhases = (
-				HD0000000000000000000061 /* Sources */,
-				HD0000000000000000000059 /* Frameworks */,
-				HD000000000000000000005D /* Resources */,
-				HD0000000000000000000045 /* Embed Foundation Extensions */,
+				HD000000000000000000006C /* Sources */,
+				HD0000000000000000000064 /* Frameworks */,
+				HD0000000000000000000068 /* Resources */,
+				HD0000000000000000000050 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				HD000000000000000000006A /* PBXTargetDependency */,
+				HD0000000000000000000075 /* PBXTargetDependency */,
 			);
 			name = "HelmsleyDrive";
 			productName = "HelmsleyDrive";
-			productReference = HD000000000000000000004F /* HelmsleyDrive.app */;
+			productReference = HD000000000000000000005A /* HelmsleyDrive.app */;
 			productType = "com.apple.product-type.application";
 		};
-		HD0000000000000000000067 /* HelmsleyFileProvider */ = {
+		HD0000000000000000000072 /* HelmsleyFileProvider */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = HD000000000000000000006E /* Build configuration list for PBXNativeTarget "HelmsleyFileProvider" */;
+			buildConfigurationList = HD0000000000000000000079 /* Build configuration list for PBXNativeTarget "HelmsleyFileProvider" */;
 			buildPhases = (
-				HD0000000000000000000062 /* Sources */,
-				HD000000000000000000005A /* Frameworks */,
-				HD000000000000000000005E /* Resources */,
+				HD000000000000000000006D /* Sources */,
+				HD0000000000000000000065 /* Frameworks */,
+				HD0000000000000000000069 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -419,35 +435,35 @@
 			);
 			name = "HelmsleyFileProvider";
 			productName = "HelmsleyFileProvider";
-			productReference = HD0000000000000000000042 /* HelmsleyFileProvider.appex */;
+			productReference = HD000000000000000000004D /* HelmsleyFileProvider.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
-		HD000000000000000000006F /* HelmsleyDrive-iOS */ = {
+		HD000000000000000000007A /* HelmsleyDrive-iOS */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = HD0000000000000000000070 /* Build configuration list for PBXNativeTarget "HelmsleyDrive-iOS" */;
+			buildConfigurationList = HD000000000000000000007B /* Build configuration list for PBXNativeTarget "HelmsleyDrive-iOS" */;
 			buildPhases = (
-				HD0000000000000000000063 /* Sources */,
-				HD000000000000000000005B /* Frameworks */,
-				HD000000000000000000005F /* Resources */,
-				HD0000000000000000000046 /* Embed Foundation Extensions */,
+				HD000000000000000000006E /* Sources */,
+				HD0000000000000000000066 /* Frameworks */,
+				HD000000000000000000006A /* Resources */,
+				HD0000000000000000000051 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				HD000000000000000000006B /* PBXTargetDependency */,
+				HD0000000000000000000076 /* PBXTargetDependency */,
 			);
 			name = "HelmsleyDrive-iOS";
 			productName = "HelmsleyDrive-iOS";
-			productReference = HD0000000000000000000050 /* HelmsleyDrive-iOS.app */;
+			productReference = HD000000000000000000005B /* HelmsleyDrive-iOS.app */;
 			productType = "com.apple.product-type.application";
 		};
-		HD0000000000000000000069 /* HelmsleyFileProvider-iOS */ = {
+		HD0000000000000000000074 /* HelmsleyFileProvider-iOS */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = HD0000000000000000000071 /* Build configuration list for PBXNativeTarget "HelmsleyFileProvider-iOS" */;
+			buildConfigurationList = HD000000000000000000007C /* Build configuration list for PBXNativeTarget "HelmsleyFileProvider-iOS" */;
 			buildPhases = (
-				HD0000000000000000000064 /* Sources */,
-				HD000000000000000000005C /* Frameworks */,
-				HD0000000000000000000060 /* Resources */,
+				HD000000000000000000006F /* Sources */,
+				HD0000000000000000000067 /* Frameworks */,
+				HD000000000000000000006B /* Resources */,
 			);
 			buildRules = (
 			);
@@ -455,34 +471,34 @@
 			);
 			name = "HelmsleyFileProvider-iOS";
 			productName = "HelmsleyFileProvider-iOS";
-			productReference = HD0000000000000000000044 /* HelmsleyFileProvider-iOS.appex */;
+			productReference = HD000000000000000000004F /* HelmsleyFileProvider-iOS.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		HD0000000000000000000066 /* Project object */ = {
+		HD0000000000000000000071 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2700;
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
-					HD000000000000000000006C = {
+					HD0000000000000000000077 = {
 						CreatedOnToolsVersion = 27.0;
 					};
-					HD0000000000000000000067 = {
+					HD0000000000000000000072 = {
 						CreatedOnToolsVersion = 27.0;
 					};
-					HD000000000000000000006F = {
+					HD000000000000000000007A = {
 						CreatedOnToolsVersion = 27.0;
 					};
-					HD0000000000000000000069 = {
+					HD0000000000000000000074 = {
 						CreatedOnToolsVersion = 27.0;
 					};
 				};
 			};
-			buildConfigurationList = HD0000000000000000000072 /* Build configuration list for PBXProject "HelmsleyDrive" */;
+			buildConfigurationList = HD000000000000000000007D /* Build configuration list for PBXProject "HelmsleyDrive" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -490,21 +506,21 @@
 				en,
 				Base,
 			);
-			mainGroup = HD0000000000000000000058;
-			productRefGroup = HD0000000000000000000057 /* Products */;
+			mainGroup = HD0000000000000000000063;
+			productRefGroup = HD0000000000000000000062 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				HD000000000000000000006C /* HelmsleyDrive */,
-				HD0000000000000000000067 /* HelmsleyFileProvider */,
-				HD000000000000000000006F /* HelmsleyDrive-iOS */,
-				HD0000000000000000000069 /* HelmsleyFileProvider-iOS */,
+				HD0000000000000000000077 /* HelmsleyDrive */,
+				HD0000000000000000000072 /* HelmsleyFileProvider */,
+				HD000000000000000000007A /* HelmsleyDrive-iOS */,
+				HD0000000000000000000074 /* HelmsleyFileProvider-iOS */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin XCBuildConfiguration section */
-		HD0000000000000000000073 /* Debug */ = {
+		HD000000000000000000007E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -528,7 +544,7 @@
 			};
 			name = Debug;
 		};
-		HD0000000000000000000074 /* Release */ = {
+		HD000000000000000000007F /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -549,7 +565,7 @@
 			};
 			name = Release;
 		};
-		HD0000000000000000000075 /* Debug */ = {
+		HD0000000000000000000080 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -571,7 +587,7 @@
 			};
 			name = Debug;
 		};
-		HD0000000000000000000076 /* Release */ = {
+		HD0000000000000000000081 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -593,7 +609,7 @@
 			};
 			name = Release;
 		};
-		HD0000000000000000000077 /* Debug */ = {
+		HD0000000000000000000082 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -614,7 +630,7 @@
 			};
 			name = Debug;
 		};
-		HD0000000000000000000078 /* Release */ = {
+		HD0000000000000000000083 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -635,7 +651,7 @@
 			};
 			name = Release;
 		};
-		HD0000000000000000000079 /* Debug */ = {
+		HD0000000000000000000084 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -657,7 +673,7 @@
 			};
 			name = Debug;
 		};
-		HD000000000000000000007A /* Release */ = {
+		HD0000000000000000000085 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -679,7 +695,7 @@
 			};
 			name = Release;
 		};
-		HD000000000000000000007B /* Debug */ = {
+		HD0000000000000000000086 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -703,7 +719,7 @@
 			};
 			name = Debug;
 		};
-		HD000000000000000000007C /* Release */ = {
+		HD0000000000000000000087 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -730,52 +746,52 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		HD0000000000000000000072 /* Build configuration list for PBXProject "HelmsleyDrive" */ = {
+		HD000000000000000000007D /* Build configuration list for PBXProject "HelmsleyDrive" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				HD0000000000000000000073 /* Debug */,
-				HD0000000000000000000074 /* Release */,
+				HD000000000000000000007E /* Debug */,
+				HD000000000000000000007F /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		HD000000000000000000006D /* Build configuration list for PBXNativeTarget "HelmsleyDrive" */ = {
+		HD0000000000000000000078 /* Build configuration list for PBXNativeTarget "HelmsleyDrive" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				HD0000000000000000000075 /* Debug */,
-				HD0000000000000000000076 /* Release */,
+				HD0000000000000000000080 /* Debug */,
+				HD0000000000000000000081 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		HD000000000000000000006E /* Build configuration list for PBXNativeTarget "HelmsleyFileProvider" */ = {
+		HD0000000000000000000079 /* Build configuration list for PBXNativeTarget "HelmsleyFileProvider" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				HD0000000000000000000077 /* Debug */,
-				HD0000000000000000000078 /* Release */,
+				HD0000000000000000000082 /* Debug */,
+				HD0000000000000000000083 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		HD0000000000000000000070 /* Build configuration list for PBXNativeTarget "HelmsleyDrive-iOS" */ = {
+		HD000000000000000000007B /* Build configuration list for PBXNativeTarget "HelmsleyDrive-iOS" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				HD0000000000000000000079 /* Debug */,
-				HD000000000000000000007A /* Release */,
+				HD0000000000000000000084 /* Debug */,
+				HD0000000000000000000085 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		HD0000000000000000000071 /* Build configuration list for PBXNativeTarget "HelmsleyFileProvider-iOS" */ = {
+		HD000000000000000000007C /* Build configuration list for PBXNativeTarget "HelmsleyFileProvider-iOS" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				HD000000000000000000007B /* Debug */,
-				HD000000000000000000007C /* Release */,
+				HD0000000000000000000086 /* Debug */,
+				HD0000000000000000000087 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
 	};
-	rootObject = HD0000000000000000000066 /* Project object */;
+	rootObject = HD0000000000000000000071 /* Project object */;
 }

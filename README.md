@@ -50,6 +50,7 @@ Shared/                 compiled into all four targets
   TokenStore.swift      the token set, in the shared keychain
   HelmsleyAPI.swift     every call to /api/files
   ItemIdentity.swift    what an NSFileProviderItemIdentifier means here
+  PushTokenStore.swift  the APNs token the extension registered, where the app can withdraw it
 AppShared/              the two container apps, not the extensions
   AppModel.swift        sign in, mount, unmount — the state behind both UIs
   SignIn.swift          the OAuth sheet, anchored to an NSWindow or a UIWindow
@@ -108,14 +109,52 @@ there are some. Finder's refresh does not provoke a listing and navigating back 
 not either — that is the old non-replicated behaviour, and assuming it here is what left a document
 filed in the dashboard invisible until the volume was removed and re-added.
 
-So the extension says so itself. Every write made through Finder signals its folder directly.
-Everything else is `FileProvider/ChangePoller.swift`: an enumerator registers while the system is
-observing its folder, the poller re-lists those folders every 30 seconds, and a folder whose
-signature has moved is signalled. It asks about the folders someone has open and nothing else — the
-tree at large is never walked, and a folder nobody is looking at costs nothing. The working set is
-excluded deliberately: its enumerator lives as long as the extension does, so polling it would be a
-request every interval forever. If the portal ever grows push, `ChangeSignal` is the seam — the
-poller goes and the payload signals the same containers.
+So something has to say so. Every write made through Finder signals its own folder directly. For
+everything else — the dashboard, a client's form submission, a distribution run — the portal pushes.
+
+### The push
+
+`FileProvider/PushRegistrar.swift` registers with PushKit for the `.fileProvider` push type and
+sends the device token to `/api/files/push-token`. Registration happens in the *extension*, not in
+the container app, though Apple allows either: the extension is loaded whenever anything touches the
+volume, while the app might not be opened for months — and a token that changed in the meantime
+would leave the volume unreachable until somebody thought to open it.
+
+What arrives is less than it looks like. A file provider push is not delivered to any code here:
+`pushRegistry(_:didReceiveIncomingPushWith:for:)` is never called for this type. The system takes
+the notification, reads the domain out of the payload, and signals that domain's **working set**
+itself — and for a replicated extension it ignores any other container the payload names. So the
+whole message is "look again", which is exactly as much as the portal could honestly say: a document
+row has no path and appears in every folder whose filter matches it, so which folders one upload
+changed is a question only `directoryStructure.js` can answer, and answering it server-side would
+mean a second copy of the tree to keep in step.
+
+The signalled working set arrives at `BinEnumerator.enumerateChanges`, which calls
+`ChangePoller.checkNow()` — and from there it is the same machinery that used to run on a timer: the
+folders with a live enumerator are re-listed, and the ones whose signature has moved are signalled.
+That is the part push could not replace, because "which folders is somebody looking at" is knowledge
+that exists in this process and nowhere else.
+
+`FileProvider/ChangePoller.swift` therefore stays, at 15 minutes rather than 30 seconds. A push is a
+datagram with no delivery anybody can check — the portal may have no APNs key, the registration may
+have failed, the machine may have been asleep — so the timer is what notices that one never came.
+The interval switches on what registering answered, and drops back to 30 seconds if push is not
+established. Either way a round asks the same question of the same folders: the tree at large is
+never walked, and a folder nobody is looking at costs nothing.
+
+One thing the timer used to cover and push cannot: a folder that changed while nobody had it open.
+There was no enumerator to ask about when the push arrived, and the system does not re-list a folder
+on being navigated back into — so a folder that starts being watched is asked about once, three
+seconds in, and then left to the push. Three seconds rather than at once because the first
+enumeration of a folder lands a moment after the enumerator is made, and it is the one that records
+what the folder holds; asking before it would compare a listing against nothing and read as a change.
+
+The working set is still not polled — its enumerator lives as long as the extension does, so a round
+of it would be a request every interval forever — and it still holds the bin and nothing else. It is
+now also the door the push comes in through, which costs it nothing: the system signals it, this
+extension does the fan-out.
+
+### Sync anchors
 
 Sync anchors are checked rather than assumed. `enumerateChanges` diffs against the listing the
 incoming anchor was actually issued for, which is why `SnapshotStore` keeps the last few rather than
@@ -265,9 +304,16 @@ All in `../Helmsley`:
 | `backend/utils/domain/documents/directoryCompiler.js` | admin file listings also carry `file_mime`, `byte_size`, `content_hash`; a `mount` node hands its subtree over whole |
 | `backend/routes/admin/mcp/oauthProvider.js` | resolves additional statically registered OAuth clients |
 | `backend/utils/http/urls.js` | CSP `form-action` covers every registered client's callback, private-use schemes by scheme alone |
-| `backend/config.js` | `mcp.clients[]` — the schema for those |
+| `backend/config.js` | `mcp.clients[]` — the schema for those, and `apns` — the push signing key |
 | `backend/server.js` | mounts `/api/files` with its own rate-limit bucket |
-| `config.json` | registers the `helmsley-drive` client |
+| `config.json` | registers the `helmsley-drive` client, and the APNs key |
+| `backend/utils/integrations/apns.js` | **new** — the APNs sender: an ES256 JWT and one HTTP/2 POST per device, no dependency |
+| `backend/utils/domain/fileProvider/pushDevices.js` | **new** — the registered devices, keyed by token |
+| `backend/utils/domain/fileProvider/changeSignal.js` | **new** — `signalDocuments()` / `signalPersonalFiles()`, coalesced and fanned out |
+| `backend/routes/fileProvider.js` | `POST`/`DELETE /push-token` |
+| `backend/scripts/init-db.js` | `file_provider_devices` |
+| everything that writes a document | signals afterwards: `finaliseUpload.js`, `deleteDocument.js`, the dashboard's document edit, a form's uploaded evidence and rendered PDF, a message attachment being filed, a distribution's remittances |
+| `adminFileWrites.js` | signals the owning admin after each of its seven writes |
 
 ### Why OAuth rather than the session cookie
 
@@ -300,6 +346,46 @@ of which any cookie would ever present again.
 No secret: the app ships to laptops, so PKCE is what binds an authorization code to the process that
 asked for it. **The same entry has to exist in whatever `config.json` is deployed**, or sign-in
 fails at the authorize step with an unknown-client error.
+
+### Turning push on
+
+Three things, and the volume works without any of them — it falls back to asking every 30 seconds,
+which is what it did before push existed.
+
+**1. An APNs auth key.** In the developer portal, Certificates, Identifiers & Profiles → Keys → **+**,
+enable *Apple Push Notifications service (APNs)*, download the `.p8`. It can be downloaded once, and
+one key signs for every app of the team, so this is not something to do twice. Note the Key ID beside
+it and the Team ID (`CR2F6D8AF7`).
+
+**2. Push Notifications on both App IDs.** `uk.co.helmsley.HelmsleyDrive` and
+`uk.co.helmsley.HelmsleyDrive.FileProvider` — the entitlement is in all four targets' `.entitlements`
+files, and `-allowProvisioningUpdates` enables the capability on the App IDs on the next build.
+
+**3. The key in `config.json`:**
+
+```json
+"apns": {
+  "keyId": "ABCD123456",
+  "teamId": "CR2F6D8AF7",
+  "key": "-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----\n",
+  "topic": "uk.co.helmsley.HelmsleyDrive.pushkit.fileprovider",
+  "environment": "production"
+}
+```
+
+The topic is the **app's** bundle identifier with `.pushkit.fileprovider` appended — not the
+extension's, though the extension is what registers. `key` is the `.p8` file's contents; `keyFile` is
+a path to it instead, which suits a local checkout and not a deploy, since App Engine ships nothing
+outside the repo. Omit the whole block and no push is ever sent: `/push-token` still accepts
+registrations and answers `push: false`, which is what tells the app to keep its short timer.
+
+`environment` is only the first host to try. A device says which it was signed for when it registers,
+and `apns.js` corrects the record from what APNs answers — so a TestFlight install and a locally
+built one work side by side without anything being told which is which.
+
+Nothing here is worth alerting on when it fails. A push that does not arrive costs a folder its
+freshness for up to fifteen minutes and nothing else, so a refusal is logged (`APNs refused device …`)
+and the send moves on; a device APNs reports as unregistered has its row deleted.
 
 ## Building
 

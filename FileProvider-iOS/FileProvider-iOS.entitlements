@@ -13,5 +13,10 @@
 	<array>
 		<string>$(AppIdentifierPrefix)uk.co.helmsley.HelmsleyDrive</string>
 	</array>
+	<!-- Push notifications, which is how the portal says the tree has moved: the file provider
+	     extension registers with PushKit and the system signals the domain when one arrives. Xcode's
+	     distribution step rewrites the value for a release build. -->
+	<key>aps-environment</key>
+	<string>development</string>
 </dict>
 </plist>

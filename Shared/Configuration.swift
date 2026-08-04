@@ -89,6 +89,41 @@ enum Configuration {
     /// Service name of the keychain item holding the token set.
     static let keychainService = "uk.co.helmsley.HelmsleyDrive.oauth"
 
+    // MARK: - Push
+
+    /// Which APNs environment this build's push tokens belong to.
+    ///
+    /// Reported when the token is registered, because nothing about a token says which host will
+    /// accept it: a development-signed build's token is simply unknown to the production host and
+    /// the other way round. The portal treats this as the first thing to try and corrects itself
+    /// from what APNs answers, so being wrong costs one rejected push rather than the feature.
+    ///
+    /// Read from the running binary's own entitlement on macOS, where that can be asked, and taken
+    /// from the build configuration on iOS, where it cannot: a debug build is what Xcode installs
+    /// with a development profile, and a release build is what is archived for TestFlight.
+    static let pushEnvironment: String = {
+        #if os(macOS)
+        if let task = SecTaskCreateFromSelf(nil),
+           let value = SecTaskCopyValueForEntitlement(task, "com.apple.developer.aps-environment" as CFString, nil) as? String {
+            return value
+        }
+        return "development"
+        #elseif DEBUG
+        return "development"
+        #else
+        return "production"
+        #endif
+    }()
+
+    /// Which of the two platforms this is, for the portal's own record of a registered device.
+    static let platformName: String = {
+        #if os(macOS)
+        return "macOS"
+        #else
+        return "iOS"
+        #endif
+    }()
+
     // MARK: - The mounted volume
 
     /// Identifies the file provider domain. Stable for the life of the install: changing it
