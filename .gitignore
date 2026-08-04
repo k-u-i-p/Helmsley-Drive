@@ -9,3 +9,8 @@ build/
 
 # Local tooling state, not project configuration.
 .claude/
+
+# APNs auth keys. Apple hands the .p8 over once and never again, so a copy kept here is worth
+# having — and it signs pushes for every app of the team, so it is not worth committing. The
+# deployed copy is the PEM inside the portal's own gitignored config.json.
+*.p8
