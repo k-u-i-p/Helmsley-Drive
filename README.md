@@ -110,22 +110,48 @@ client of every syndicate on a schedule nobody asked for; folders enumerate on d
 
 Identical on both platforms — it is the same extension.
 
-| | |
-| --- | --- |
-| Browse the whole admin tree | yes |
-| Open, preview, Quick Look, copy out | yes — downloaded on first open, evictable afterwards |
-| Move a file **into** a folder that accepts uploads | yes — filed via the portal's own ticket → bucket → finalise path |
-| Delete a document | yes — deletes the row and its bytes, exactly as the dashboard's delete does |
-| Rename, move, or save changes back | **no** — refused with an explanation |
+Identical on both platforms — it is the same extension. The tree has two halves, and what the volume
+can do differs between them, because they are different kinds of thing.
 
-Rename and in-place editing are refused because the portal has no endpoint behind them: a
-document's title, type and links are the filing an admin chose, and some filings it refuses to
-change at all (a compliance document cannot be refiled). Offering them would mean accepting an edit
-that quietly never reached the server. Files show as locked, which is the truth.
+The **classified tree** — Clients, Properties, everything the dashboard files — is a set of views
+over `documents`. A row has no path and appears in every folder whose filter matches it.
+
+**My Files** is the signed-in admin's own folder, and the one branch that is a real filesystem: a row
+sits in exactly one directory because someone put it there.
+
+| | classified tree | My Files |
+| --- | --- | --- |
+| Browse | yes | yes |
+| Open, preview, Quick Look, copy out | yes — downloaded on first open, evictable afterwards | yes |
+| Drop a file in | where the folder accepts uploads — filed via the portal's own ticket → bucket → finalise path | anywhere in it |
+| Delete | yes — the row and its bytes, exactly as the dashboard's delete does | yes — a folder takes its subtree with it |
+| New folder | **no** — refused with an explanation | yes |
+| Rename, move | **no** — refused with an explanation | yes |
+| Save changes back | **no** — refused with an explanation | **no** — refused with an explanation |
+
+Renaming and moving a *document* are refused because the portal has no endpoint behind them: its
+title, type and links are the filing an admin chose, and some filings it refuses to change at all (a
+compliance document cannot be refiled). Creating a folder there is refused because a folder is a
+filter that `directoryStructure.js` defines, not a container. Offering any of them would mean
+accepting an edit that quietly never reached the server; Finder shows them as locked, which is the
+truth.
+
+Saving changes back is refused on **both** halves, and for the same reason each time: nothing
+replaces a file's bytes under the same row. A document's are the filing; an admin's own file is
+stored under a key derived from its content hash, so different bytes are a different row.
 
 Which folders accept uploads comes from the portal's `directoryStructure.js`, resolved server-side —
 the app never sends a document type or a client id, so it cannot file anything anywhere the
-dashboard would not have.
+dashboard would not have. Which folders can be *restructured* is not a flag on a listing at all: the
+mount has one fixed segment (`My Files`, stable while the folder is labelled with the admin's name),
+and `ItemIdentity` decides from the path alone, before Finder is offered the operation.
+
+### Item identifiers are opaque
+
+Two tables hang off one volume — `documents` and the admin's own files — and their ids are serials
+from separate sequences, so the server marks which one an id came from and hands over the whole
+thing as a string. Nothing in this app parses one. Reading an id as a number would silently drop the
+mark and fail to decode every personal item outright.
 
 ## Changes to the portal
 
@@ -137,7 +163,11 @@ All in `../Helmsley`:
 | `backend/utils/http/bearerAdmin.js` | **new** — authenticates a request by OAuth access token instead of by session cookie |
 | `backend/utils/domain/documents/deleteDocument.js` | **new** — the delete (row + bytes), extracted so Finder and the dashboard cannot come to disagree about it |
 | `backend/routes/admin/documents.js` | delete now calls the above |
-| `backend/utils/domain/documents/directoryCompiler.js` | admin file listings also carry `file_mime`, `byte_size`, `content_hash` |
+| `backend/utils/domain/adminFiles/adminFileTree.js` | **new** — My Files, walked and listed: the mount the classified tree hands off to |
+| `backend/utils/domain/adminFiles/adminFileWrites.js` | **new** — everything that changes it: new folder, rename, move, delete, finalise |
+| `backend/utils/domain/documents/stagedUpload.js` | **new** — the bucket half of an upload, which was the same for both trees all along |
+| `backend/utils/domain/documents/directoryStructure.js` | the `My Files` mount node |
+| `backend/utils/domain/documents/directoryCompiler.js` | admin file listings also carry `file_mime`, `byte_size`, `content_hash`; a `mount` node hands its subtree over whole |
 | `backend/routes/admin/mcp/oauthProvider.js` | resolves additional statically registered OAuth clients |
 | `backend/utils/http/urls.js` | CSP `form-action` covers every registered client's callback, private-use schemes by scheme alone |
 | `backend/config.js` | `mcp.clients[]` — the schema for those |

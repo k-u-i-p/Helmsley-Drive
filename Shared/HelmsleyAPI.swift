@@ -4,8 +4,13 @@ import Foundation
 
 /// One document, as `/api/files` describes it. `version` is the content hash: it changes when and
 /// only when the bytes do, which is what the file provider needs and what a date would not give.
+///
+/// `id` is opaque, and has to stay that way. Two trees hang off this one volume — `documents`, and
+/// the admin's own files, which are a different table with its own sequence — so the server marks
+/// which one an id came from and hands the whole thing back as a string. Reading it as a number
+/// silently loses that mark, and every personal item fails to decode at all.
 struct RemoteFile: Codable, Sendable, Equatable {
-    let id: Int
+    let id: String
     let filename: String
     let title: String
     let type: String?
@@ -84,9 +89,9 @@ struct HelmsleyAPI: Sendable {
         return try await get(components.url!)
     }
 
-    func document(id: Int) async throws -> RemoteFile {
+    func document(id: String) async throws -> RemoteFile {
         struct Wrapper: Decodable { let file: RemoteFile }
-        let wrapper: Wrapper = try await get(base.appendingPathComponent("documents/\(id)"))
+        let wrapper: Wrapper = try await get(documentURL(id))
         return wrapper.file
     }
 
@@ -104,8 +109,8 @@ struct HelmsleyAPI: Sendable {
     /// `reporting` is the progress the file provider handed back to the system. The transfer's own
     /// progress is attached to it as a child, which both drives the percentage the user watches and
     /// makes cancelling it cancel the actual transfer.
-    func downloadContents(id: Int, reporting parent: Progress? = nil) async throws -> URL {
-        var request = URLRequest(url: base.appendingPathComponent("documents/\(id)/content"))
+    func downloadContents(id: String, reporting parent: Progress? = nil) async throws -> URL {
+        var request = URLRequest(url: documentURL(id).appendingPathComponent("content"))
         request.setValue("Bearer \(try await TokenProvider.shared.accessToken())", forHTTPHeaderField: "Authorization")
 
         let (url, response) = try await Transport.download(request, reporting: parent)
@@ -163,15 +168,65 @@ struct HelmsleyAPI: Sendable {
         return wrapper.file
     }
 
-    func delete(id: Int) async throws {
-        var request = URLRequest(url: base.appendingPathComponent("documents/\(id)"))
+    func delete(id: String) async throws {
+        var request = URLRequest(url: documentURL(id))
         request.httpMethod = "DELETE"
         _ = try await send(request) as Empty
+    }
+
+    // MARK: The admin's own folder
+
+    // Making a directory, renaming and moving exist only for this one branch of the tree. Everywhere
+    // else a folder is a filter over `documents` and a file is a row with no path — nothing there to
+    // create, nothing to move along. The server refuses the rest by name, and so does the extension,
+    // before Finder offers an operation that could never have reached anything.
+
+    /// Makes a directory in the admin's own folder.
+    ///
+    /// A name already in use is numbered rather than refused — which is what a filesystem does — so
+    /// the folder to show is the one that comes back, not the one that was asked for.
+    func createFolder(path: [String], name: String) async throws -> RemoteFolder {
+        struct Wrapper: Decodable { let folder: RemoteFolder }
+        let wrapper: Wrapper = try await post(
+            base.appendingPathComponent("folders"),
+            body: ["path": path, "name": name]
+        )
+        return wrapper.folder
+    }
+
+    /// Renames one item, and answers the name it now has.
+    ///
+    /// Unlike a move, a taken name is refused rather than numbered: a rename is someone typing a
+    /// name they mean, and quietly making it "Report 2" would hide that "Report" is already there.
+    @discardableResult
+    func rename(id: String, to name: String) async throws -> String {
+        struct Wrapper: Decodable { let name: String }
+        let wrapper: Wrapper = try await post(itemURL(id, "rename"), body: ["name": name])
+        return wrapper.name
+    }
+
+    /// Moves one item into the folder at `path`, and answers the name it landed under — which is not
+    /// always the name it left with, since a collision in the target is numbered rather than refused.
+    @discardableResult
+    func move(id: String, to path: [String]) async throws -> String {
+        struct Wrapper: Decodable { let name: String }
+        let wrapper: Wrapper = try await post(itemURL(id, "move"), body: ["path": path])
+        return wrapper.name
     }
 
     // MARK: Plumbing
 
     private struct Empty: Decodable {}
+
+    // Both take the id as a path component rather than interpolating it into one. An identifier is
+    // whatever the server chose to make it, so it is escaped rather than trusted to be URL-safe.
+    private func documentURL(_ id: String) -> URL {
+        base.appendingPathComponent("documents").appendingPathComponent(id)
+    }
+
+    private func itemURL(_ id: String, _ action: String) -> URL {
+        base.appendingPathComponent("items").appendingPathComponent(id).appendingPathComponent(action)
+    }
 
     private func get<T: Decodable>(_ url: URL) async throws -> T {
         try await send(URLRequest(url: url))

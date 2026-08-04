@@ -125,19 +125,25 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     ) -> Progress {
         let progress = Progress()
 
-        // The tree is the portal's, and it is fixed: a folder means a filter over `documents`, not
-        // a container that can be created. Refused rather than silently ignored, so a new folder
-        // never sits in Finder looking as though it exists.
-        guard itemTemplate.contentType != .folder else {
-            completionHandler(nil, [], false, FileProviderError.unsupported("Folders cannot be created — the Helmsley document tree is fixed."))
-            return progress
-        }
-        guard let contents = url else {
-            completionHandler(nil, [], false, FileProviderError.unsupported("A file must have contents to be filed."))
-            return progress
-        }
         guard let parent = ItemIdentity(itemTemplate.parentItemIdentifier) else {
             completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
+            return progress
+        }
+
+        if itemTemplate.contentType == .folder {
+            // A folder is a row only in the admin's own branch. In the rest of the tree it is a
+            // filter over `documents` that the directory spec defines, so there is nothing there to
+            // create. Refused rather than silently ignored, so a new folder never sits in Finder
+            // looking as though it exists.
+            guard parent.isPersonal else {
+                completionHandler(nil, [], false, FileProviderError.unsupported("Folders can only be made in your own folder — the rest of the Helmsley tree is the portal's, and fixed."))
+                return progress
+            }
+            return makeFolder(in: parent, named: itemTemplate.filename, progress: progress, completionHandler: completionHandler)
+        }
+
+        guard let contents = url else {
+            completionHandler(nil, [], false, FileProviderError.unsupported("A file must have contents to be filed."))
             return progress
         }
 
@@ -163,6 +169,32 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         return progress
     }
 
+    /// The folder half of `createItem`.
+    ///
+    /// The name that comes back is not always the name asked for — a collision is numbered rather
+    /// than refused, which is what a filesystem does — so the item handed to the system is built
+    /// from the server's answer. Reporting the requested name instead would leave Finder showing
+    /// one folder under two names until something re-listed it.
+    private func makeFolder(
+        in parent: ItemIdentity,
+        named name: String,
+        progress: Progress,
+        completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
+    ) -> Progress {
+        let work = Task {
+            do {
+                let remote = try await api.createFolder(path: parent.path, name: name)
+                await signalChange(at: parent.identifier)
+                completionHandler(FileProviderItem.folder(path: parent.path + [remote.segment], remote: remote), [], false, nil)
+            } catch {
+                Log.provider.error("creating a folder in \(parent.path.logPath, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                completionHandler(nil, [], false, FileProviderError.translate(error))
+            }
+        }
+        progress.cancellationHandler = { work.cancel() }
+        return progress
+    }
+
     func modifyItem(
         _ item: NSFileProviderItem,
         baseVersion version: NSFileProviderItemVersion,
@@ -174,19 +206,81 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
 
-        // Renaming, moving and rewriting all have no endpoint behind them: a document's title, its
-        // type and its links are the filing an admin chose in the portal, and the portal refuses to
-        // refile some of them outright (a compliance document, for one). Anything else Finder wants
-        // to record — a tag, a last-used date — is local, so it is accepted unchanged.
-        let unsupported: NSFileProviderItemFields = [.contents, .filename, .parentItemIdentifier]
-        guard changedFields.intersection(unsupported).isEmpty else {
-            completionHandler(nil, [], false, FileProviderError.unsupported("Helmsley documents cannot be renamed, moved or edited in place. Change them in the portal instead."))
+        guard let identity = ItemIdentity(item.itemIdentifier) else {
+            completionHandler(nil, [], false, NSFileProviderError(.noSuchItem))
             return progress
         }
 
+        // Rewriting in place has no endpoint behind it anywhere in the tree, for the reason
+        // `.allowsWriting` is never offered: a file's bytes are not something either table lets you
+        // replace under the same row.
+        guard !changedFields.contains(.contents) else {
+            completionHandler(nil, [], false, FileProviderError.unsupported("Helmsley files cannot be edited in place. Save a copy and file that instead."))
+            return progress
+        }
+
+        // Renaming and moving reach the server only inside the admin's own folder. A document's
+        // title, its type and its links are the filing an admin chose in the portal, which refuses
+        // to refile some of them outright (a compliance document, for one) — and it has no path to
+        // move one along in any case. Anything else Finder wants to record — a tag, a last-used
+        // date — is local, so it is accepted unchanged.
+        let relocation = changedFields.intersection([.filename, .parentItemIdentifier])
+        guard let itemID = identity.personalItemID else {
+            guard relocation.isEmpty else {
+                completionHandler(nil, [], false, FileProviderError.unsupported(identity.isPersonal
+                    ? "Your own folder is named after you and follows your name — it cannot be renamed or moved."
+                    : "Helmsley documents cannot be renamed or moved. Change the filing in the portal instead."))
+                return progress
+            }
+            return acknowledge(identity, progress: progress, completionHandler: completionHandler)
+        }
+        guard !relocation.isEmpty else {
+            return acknowledge(identity, progress: progress, completionHandler: completionHandler)
+        }
+
+        let source = identity.parentIdentifier
+        let work = Task {
+            do {
+                var moved = identity
+                if relocation.contains(.parentItemIdentifier) {
+                    guard let target = ItemIdentity(item.parentItemIdentifier), target.isPersonal else {
+                        throw FileProviderError.unsupported("An item can only be moved within your own folder.")
+                    }
+                    try await api.move(id: itemID, to: target.path)
+                    moved = identity.relocated(under: target.path)
+                }
+                // Moved first, then renamed — because the two settle a name clash differently. A
+                // move numbers what it cannot keep, so doing it first parks the item in the target
+                // under whatever name is free; the rename then asks for the name the user actually
+                // typed, in the folder where it has to be free, and says so if it is taken. The
+                // other order would refuse a rename over a clash in the folder being left behind.
+                if relocation.contains(.filename) {
+                    try await api.rename(id: itemID, to: item.filename)
+                }
+
+                let updated = try await self.item(for: moved)
+                await signalChange(at: source)
+                if updated.parentItemIdentifier != source { await signalChange(at: updated.parentItemIdentifier) }
+                completionHandler(updated, [], false, nil)
+            } catch {
+                Log.provider.error("modifying \(identity.path.logPath, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                completionHandler(nil, [], false, FileProviderError.translate(error))
+            }
+            progress.completedUnitCount = 1
+        }
+        progress.cancellationHandler = { work.cancel() }
+        return progress
+    }
+
+    /// Answers a modification that needs nothing of the server with the item as it stands — the
+    /// tags, the labels and the dates Finder keeps on its own side and only wants recorded.
+    private func acknowledge(
+        _ identity: ItemIdentity,
+        progress: Progress,
+        completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
+    ) -> Progress {
         Task {
             do {
-                guard let identity = ItemIdentity(item.itemIdentifier) else { throw NSFileProviderError(.noSuchItem) }
                 completionHandler(try await self.item(for: identity), [], false, nil)
             } catch {
                 completionHandler(nil, [], false, FileProviderError.translate(error))
@@ -205,16 +299,20 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
 
-        guard let identity = ItemIdentity(identifier), case .file(_, let documentID) = identity else {
-            completionHandler(FileProviderError.unsupported("Only documents can be deleted — the folders are part of the portal's structure."))
+        // A file, or a folder in the admin's own branch — the only folders that are rows rather than
+        // filters. The classified tree's folders are the directory spec's, so there is nothing there
+        // for a delete to remove.
+        guard let identity = ItemIdentity(identifier), let itemID = identity.deletableID else {
+            completionHandler(FileProviderError.unsupported("Only files and your own folders can be deleted — the rest of the tree is the portal's structure."))
             return progress
         }
 
         Task {
             do {
                 // Deletes the document, not this folder's view of it: a row listed in several
-                // folders disappears from all of them, which is what deleting the file means.
-                try await api.delete(id: documentID)
+                // folders disappears from all of them, which is what deleting the file means. A
+                // folder takes what is under it, which is likewise what deleting one means.
+                try await api.delete(id: itemID)
                 await signalChange(at: identity.parentIdentifier)
                 completionHandler(nil)
             } catch let error where (error as? APIError)?.isNotFound == true {

@@ -62,13 +62,24 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     }
 
     static func folder(path: [String], remote: RemoteFolder) -> FileProviderItem {
+        let identity = ItemIdentity.folder(path: path)
         var capabilities: NSFileProviderItemCapabilities = [.allowsReading, .allowsContentEnumerating]
         // Exactly the folders the portal's own tree marks as taking uploads. A drop anywhere else
         // is refused by Finder before a byte moves, rather than by the server after all of them.
-        if remote.writable { capabilities.insert(.allowsAddingSubItems) }
+        //
+        // The admin's own folder is added by identity rather than by the flag, because the flag is
+        // false for the mount seen from the level above it: what a drop there would write is a
+        // directory row, which only walking into the mount resolves, so the listing that names it
+        // has nothing to report. Walk in and the same folder says it is writable — and it is.
+        if remote.writable || identity.isPersonal { capabilities.insert(.allowsAddingSubItems) }
+        // Structural writes, only where a folder is a row someone made. Everywhere else a folder is
+        // a filter over `documents` that the directory spec defines, with nothing to rename or move.
+        if identity.personalItemID != nil {
+            capabilities.formUnion([.allowsRenaming, .allowsReparenting, .allowsDeleting])
+        }
 
         return FileProviderItem(
-            identity: .folder(path: path),
+            identity: identity,
             filename: remote.name,
             contentType: .folder,
             capabilities: capabilities,
@@ -83,15 +94,25 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     // MARK: - Files
 
     static func file(path: [String], remote: RemoteFile) -> FileProviderItem {
-        FileProviderItem(
-            identity: .file(path: path, documentID: remote.id),
+        let identity = ItemIdentity.file(path: path, documentID: remote.id)
+        // No `.allowsWriting` on either tree: nothing replaces a file's bytes in place. A document's
+        // are the filing an admin chose, and an admin's own file is stored under a key derived from
+        // its content hash, so different bytes are a different row rather than an edit to this one.
+        // Offering it would mean accepting a save in Finder that quietly never reached the server.
+        var capabilities: NSFileProviderItemCapabilities = [.allowsReading, .allowsDeleting]
+        // A document has no name of its own to change and no path to move along — its title and its
+        // links are the filing, and the portal refuses to refile some of them at all. A file in the
+        // admin's own folder is the opposite: its name is a filename someone typed, and it got where
+        // it is because they put it there.
+        if identity.personalItemID != nil {
+            capabilities.formUnion([.allowsRenaming, .allowsReparenting])
+        }
+
+        return FileProviderItem(
+            identity: identity,
             filename: remote.filename,
             contentType: contentType(for: remote),
-            // No `.allowsWriting` and no `.allowsRenaming`: the portal has no endpoint that
-            // replaces a document's bytes or its title, so offering either would mean accepting an
-            // edit in Finder that quietly never reached the server. Finder shows these as locked,
-            // which is the truth. Deleting is real — it deletes the document.
-            capabilities: [.allowsReading, .allowsDeleting],
+            capabilities: capabilities,
             documentSize: remote.size.map(NSNumber.init(value:)),
             // The content hash. It changes when and only when the bytes do, so a materialised copy
             // stays valid until the document is genuinely replaced.
