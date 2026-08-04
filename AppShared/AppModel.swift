@@ -2,6 +2,9 @@ import AuthenticationServices
 import FileProvider
 import Foundation
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 /// What the window shows and what the buttons do.
 ///
@@ -91,6 +94,44 @@ final class AppModel: ObservableObject {
             self.admin = nil
         }
     }
+
+    #if os(iOS)
+    /// Opens the Files app at the mounted volume.
+    ///
+    /// Two steps, and the first is the one that has to be asked rather than assumed: the system
+    /// decides where a domain's replica lives, and `getUserVisibleURL` is the only thing that knows.
+    /// Writing the path down here would be a guess about a private layout that has already changed
+    /// once between iOS releases.
+    ///
+    /// The second step is `shareddocuments:`, which is how anything gets Files to open at a folder.
+    /// It is the file URL under another scheme, and it is not in any header — Apple documents no way
+    /// to do this at all. That is a real caveat and the reason this fails quietly rather than
+    /// loudly: if a future iOS stops answering it, the button says so and the volume is still there
+    /// in Files under Locations, which is where the banner has always pointed. It is also why this
+    /// app can afford the risk at all — it ships to a handful of staff over TestFlight, and never
+    /// goes past a reviewer who could object to the scheme.
+    func openInFiles() async {
+        guard let manager = NSFileProviderManager(for: Self.domain) else {
+            errorMessage = "The volume is not registered on this device."
+            return
+        }
+
+        do {
+            let visible = try await manager.getUserVisibleURL(for: .rootContainer)
+            guard var components = URLComponents(url: visible, resolvingAgainstBaseURL: false) else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            components.scheme = "shareddocuments"
+
+            guard let target = components.url, await UIApplication.shared.open(target) else {
+                errorMessage = "Files would not open. The documents are in the Files app, under Locations."
+                return
+            }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+    #endif
 
     private func perform(_ work: @escaping () async throws -> Void) async {
         isWorking = true

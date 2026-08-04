@@ -53,11 +53,24 @@ struct ContentView: View {
                         .foregroundStyle(.primary)
                 }
 
-                Label(
-                    model.isMounted ? "Available in Files" : "Not added to Files yet",
-                    systemImage: model.isMounted ? "folder.fill" : "folder.badge.questionmark"
-                )
-                .foregroundStyle(model.isMounted ? .primary : .secondary)
+                if model.isMounted {
+                    // The row says where the documents are, so it may as well take you there. The
+                    // arrow is the ordinary mark for a row that leaves the app, and the tint is what
+                    // says the row is a button at all — the rest of this section is not.
+                    Button {
+                        Task { await model.openInFiles() }
+                    } label: {
+                        HStack {
+                            Label("Available in Files", systemImage: "folder.fill")
+                            Spacer()
+                            Image(systemName: "arrow.up.forward.app")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    Label("Not added to Files yet", systemImage: "folder.badge.questionmark")
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 Text("Sign in with your Helmsley administrator account to browse the document tree in the Files app.")
                     .foregroundStyle(.secondary)
