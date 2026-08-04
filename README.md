@@ -109,8 +109,33 @@ there are some. Finder's refresh does not provoke a listing and navigating back 
 not either — that is the old non-replicated behaviour, and assuming it here is what left a document
 filed in the dashboard invisible until the volume was removed and re-added.
 
-So something has to say so. Every write made through Finder signals its own folder directly. For
-everything else — the dashboard, a client's form submission, a distribution run — the portal pushes.
+So something has to say so, and there is exactly one way to say it.
+
+### Everything goes through the working set
+
+`NSFileProviderManager.h`, on `signalEnumeratorForContainerItemIdentifier`:
+
+> When using NSFileProviderReplicatedExtension, only call this method with
+> NSFileProviderWorkingSetContainerItemIdentifier. **Other container identifiers are ignored.** The
+> system will automatically propagate working set changes to the UI, without explicitly signaling the
+> containers currently being viewed in the UI.
+
+This extension named the folder that had changed for a long time, which is what a non-replicated
+provider does and what every article about them describes. Every one of those signals was accepted
+and discarded: the folder's own enumerator was never asked for changes, and a document filed in the
+dashboard sat there unseen no matter how often the extension said otherwise — including after a
+Finder write, and including on every poll round. It looked like a portal problem and was never one.
+
+So the working set is signalled, whatever moved, and the working set's `enumerateChanges` is where
+the change actually gets reported: it answers with the bin — which is what it holds — plus the
+item-level diff of every folder somebody currently has open (`ChangePoller.pendingChanges()`). Each
+item carries its own `parentItemIdentifier`, so the system files it back where it belongs, applies it
+to its copy of that folder, and Finder redraws. A folder's own enumerator is left to do what it is
+actually asked to do: list itself the first time somebody opens it.
+
+That is also why the working set can stay small. It is not being asked to *hold* the tree — it is the
+channel changes are reported on, and what goes down that channel is bounded by what somebody is
+looking at.
 
 ### The push
 
@@ -129,30 +154,27 @@ row has no path and appears in every folder whose filter matches it, so which fo
 changed is a question only `directoryStructure.js` can answer, and answering it server-side would
 mean a second copy of the tree to keep in step.
 
-The signalled working set arrives at `BinEnumerator.enumerateChanges`, which calls
-`ChangePoller.checkNow()` — and from there it is the same machinery that used to run on a timer: the
-folders with a live enumerator are re-listed, and the ones whose signature has moved are signalled.
-That is the part push could not replace, because "which folders is somebody looking at" is knowledge
-that exists in this process and nowhere else.
+A push therefore lands as a working set change enumeration and nothing else — the system signals it
+on the extension's behalf — and `BinEnumerator` answers it with whatever the open folders have to
+say. No code of this app's ever sees the notification.
 
-`FileProvider/ChangePoller.swift` therefore stays, at 15 minutes rather than 30 seconds. A push is a
-datagram with no delivery anybody can check — the portal may have no APNs key, the registration may
-have failed, the machine may have been asleep — so the timer is what notices that one never came.
-The interval switches on what registering answered, and drops back to 30 seconds if push is not
-established. Either way a round asks the same question of the same folders: the tree at large is
-never walked, and a folder nobody is looking at costs nothing.
+`FileProvider/ChangePoller.swift` stays, at 15 minutes rather than 30 seconds. A push is a datagram
+with no delivery anybody can check — the portal may have no APNs key, the registration may have
+failed, the machine may have been asleep — so the timer is what notices that one never came. It
+compares each watched folder's signature against what was last reported and signals the working set
+when they differ; the interval switches on what registering answered, and drops back to 30 seconds
+if push is not established. A folder nobody is looking at costs nothing, and the tree at large is
+never walked.
 
-One thing the timer used to cover and push cannot: a folder that changed while nobody had it open.
-There was no enumerator to ask about when the push arrived, and the system does not re-list a folder
-on being navigated back into — so a folder that starts being watched is asked about once, three
-seconds in, and then left to the push. Three seconds rather than at once because the first
-enumeration of a folder lands a moment after the enumerator is made, and it is the one that records
-what the folder holds; asking before it would compare a listing against nothing and read as a change.
+One thing the timer covers that push cannot: a folder that changed while nobody had it open. There
+was no enumerator to ask about when the push arrived, and the system does not re-list a folder on
+being navigated back into — so a folder that starts being watched is checked once, three seconds in.
+Three seconds rather than at once because the first enumeration of a folder lands a moment after the
+enumerator is made, and it is the one that records what the folder holds; asking before it would
+compare a listing against nothing and read as a change.
 
-The working set is still not polled — its enumerator lives as long as the extension does, so a round
-of it would be a request every interval forever — and it still holds the bin and nothing else. It is
-now also the door the push comes in through, which costs it nothing: the system signals it, this
-extension does the fan-out.
+Detection costs one listing and the reporting enumeration costs a second, which is the price of a
+portal that cannot say what changed — and it is paid only when something has.
 
 ### Sync anchors
 
@@ -164,11 +186,12 @@ from a point this process has moved past. An anchor no longer held is answered w
 listing whatever was asked for — reports no changes and has the system record itself as up to date
 having never been told what it missed, which is a folder that stays wrong until the next remount.
 
-The working set holds the bin and nothing else. Filling it with the tree would mean enumerating
-every document of every client of every syndicate on a schedule nobody asked for; folders enumerate
-on demand instead. The bin is the exception that argument never covered — it is bounded by what one
-admin threw away, and the framework asks for trashed items there by name. What it buys is Spotlight:
-the bin is indexed, and the system stops learning about it only when someone opens the trash.
+What the working set *lists* is the bin and nothing else — as distinct from what it *reports*, which
+is every change above. Filling its listing with the tree would mean enumerating every document of
+every client of every syndicate on a schedule nobody asked for; folders enumerate on demand instead.
+The bin is the exception that argument never covered — it is bounded by what one admin threw away,
+and the framework asks for trashed items there by name. What it buys is Spotlight: the bin is
+indexed, and the system stops learning about it only when someone opens the trash.
 
 ## What the volume can and cannot do
 
@@ -385,7 +408,16 @@ built one work side by side without anything being told which is which.
 
 Nothing here is worth alerting on when it fails. A push that does not arrive costs a folder its
 freshness for up to fifteen minutes and nothing else, so a refusal is logged (`APNs refused device …`)
-and the send moves on; a device APNs reports as unregistered has its row deleted.
+and the send moves on.
+
+Two refusals and only two delete a registration: `410 Unregistered`, which is the app having been
+uninstalled, and `BadDeviceToken` from both hosts, which is a token no build of ours could have
+minted. Both say so in the log as well (`APNs has no such device …`). Everything else is a
+misconfiguration to read and correct — `DeviceTokenNotForTopic` above all, which is APNs saying the
+topic does not name the app the token was minted for. That answer is the same from both hosts and
+the same for every device, so treating it as a dead token would have one mistyped topic empty the
+registry on the first document filed after a deploy. `npm run push-test` in `../Helmsley` sends one
+by hand and spells out what each refusal means.
 
 Which is why there is a way to ask on purpose. From the portal checkout:
 

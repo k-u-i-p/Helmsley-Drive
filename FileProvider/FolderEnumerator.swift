@@ -48,8 +48,8 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator, PolledContaine
         Task { [poller, self] in await poller.stopWatching(self) }
     }
 
-    func currentSignature() async throws -> Data {
-        SnapshotStore.signature(of: try await listing().1)
+    func currentListing() async throws -> ([NSFileProviderItem], SnapshotStore.Snapshot) {
+        try await listing()
     }
 
     // MARK: - Full enumeration
@@ -202,8 +202,8 @@ final class BinEnumerator: NSObject, NSFileProviderEnumerator, PolledContainer {
         Task { await poller.watch(self) }
     }
 
-    func currentSignature() async throws -> Data {
-        SnapshotStore.signature(of: try await listing().1)
+    func currentListing() async throws -> ([NSFileProviderItem], SnapshotStore.Snapshot) {
+        try await listing()
     }
 
     /// For the log, where "the trash" and "the working set" are worth telling apart.
@@ -230,20 +230,19 @@ final class BinEnumerator: NSObject, NSFileProviderEnumerator, PolledContainer {
         }
     }
 
+    /// This is where every change in the volume is reported, and the only place the system takes one.
+    ///
+    /// A replicated extension is asked for changes here and nowhere else: signalling a folder's own
+    /// container is discarded (`ChangeSignal` quotes the header), and the folders somebody has open
+    /// are never asked. So the working set answers for two things — the bin, which is what it holds,
+    /// and whatever has moved in the folders the poller is watching, which is what a push or a poll
+    /// round has just said to go and look for.
+    ///
+    /// The items carry their own parents, so the system files each one where it belongs; it applies
+    /// them to its copy of those folders and Finder redraws. That is what "the system will
+    /// automatically propagate working set changes to the UI" means, and it is the whole of how a
+    /// document filed in the dashboard reaches a window somebody is looking at.
     func enumerateChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
-        // Where a push lands. A file provider push names the working set and nothing else — the
-        // system signals it on the extension's behalf and never hands the payload to any of this code
-        // — so this call is the whole of what arrives, and what it means is "something moved, though
-        // not necessarily in here". The folders someone has open are asked about separately, and at
-        // once: the poller knows which they are, and the push could not have said.
-        //
-        // In a task of its own, so the bin's own answer is not held up behind a listing per open
-        // folder. Signalling the trash also signals the working set, so this runs on a change made
-        // through Finder too — where the round finds every folder in step and does nothing.
-        if container == .workingSet {
-            Task { [poller] in await poller.checkNow() }
-        }
-
         Task {
             guard let previous = await SnapshotStore.shared.snapshot(matching: anchor, for: container) else {
                 Log.enumeration.info("the \(self.describing, privacy: .public) was asked for changes from an anchor it no longer holds — asking for a full listing")
@@ -254,12 +253,22 @@ final class BinEnumerator: NSObject, NSFileProviderEnumerator, PolledContainer {
             do {
                 let (items, snapshot) = try await listing()
 
-                let changed = items.filter { previous[$0.itemIdentifier.rawValue] != snapshot[$0.itemIdentifier.rawValue] }
-                let deleted = previous.keys
+                var changed = items.filter { previous[$0.itemIdentifier.rawValue] != snapshot[$0.itemIdentifier.rawValue] }
+                var deleted = previous.keys
                     .filter { snapshot[$0] == nil }
                     .map(NSFileProviderItemIdentifier.init(_:))
 
                 await SnapshotStore.shared.record(snapshot, for: container)
+
+                // The trash's own enumerator answers for the bin alone. Only the working set carries
+                // the rest of the volume, because only the working set is asked on the system's own
+                // schedule — the trash is asked while somebody has it open, and the folders these
+                // items belong to are never asked at all.
+                if container == .workingSet {
+                    let watched = await poller.pendingChanges()
+                    changed += watched.updated
+                    deleted += watched.deleted
+                }
 
                 Log.enumeration.info("\(self.describing, privacy: .public) — \(changed.count, privacy: .public) updated, \(deleted.count, privacy: .public) gone")
                 if !deleted.isEmpty { observer.didDeleteItems(withIdentifiers: deleted) }

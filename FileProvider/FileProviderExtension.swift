@@ -194,7 +194,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let work = Task {
             do {
                 let remote = try await api.upload(to: destination, filename: filename, mime: mime, fileURL: contents, reporting: progress)
-                await signal.fire(at: itemTemplate.parentItemIdentifier)
+                await signal.fire()
                 // No pending fields and nothing still uploading: the document is filed by the time
                 // this returns, because the finalise step is what created it.
                 completionHandler(FileProviderItem.file(in: parent, remote: remote), [], false, nil)
@@ -222,7 +222,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let work = Task {
             do {
                 let remote = try await api.createFolder(in: parent.destination, name: name)
-                await signal.fire(at: parent.identifier)
+                await signal.fire()
                 completionHandler(FileProviderItem.folder(in: parent, remote: remote), [], false, nil)
             } catch {
                 Log.provider.error("creating a folder in \(parent.destination.logDescription, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
@@ -302,8 +302,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 }
 
                 let updated = try await self.item(for: settled)
-                await signal.fire(at: source)
-                if updated.parentItemIdentifier != source { await signal.fire(at: updated.parentItemIdentifier) }
+                await signal.fire()
                 completionHandler(updated, [], false, nil)
             } catch {
                 Log.provider.error("modifying \(itemID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
@@ -385,19 +384,18 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         Task {
             do {
-                // Which listing loses an item, worked out before there is nothing left to ask. A
-                // personal item's identifier does not say where it sits, and after the delete
-                // neither does the server — so it is looked up first, and best-effort: signalling is
-                // what makes Finder notice at once rather than at the next thing that asks, so
-                // failing to work it out is a slower refresh and not a wrong one.
-                let container = await self.containerOf(identity)
-
+                // Nothing is looked up first any more. This used to ask the server which folder the
+                // item sat in, before the delete made that unanswerable, so the signal could name it
+                // — and naming it was worth nothing: a replicated extension's signals are only ever
+                // about the working set, and what the folder lost is worked out when the system comes
+                // asking for the working set's changes.
+                //
                 // Deletes the document, not this folder's view of it: a row listed in several
                 // folders disappears from all of them, which is what deleting the file means. A
                 // folder takes what is under it — including anything already in the bin from inside
                 // it, which is gone either way once the folder holding it is.
                 try await api.delete(id: itemID)
-                if let container { await signal.fire(at: container) }
+                await signal.fire()
                 completionHandler(nil)
             } catch let error where (error as? APIError)?.isNotFound == true {
                 // Already gone — which is the outcome asked for, so it is not a failure.
@@ -441,15 +439,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         return false
     }
 
-    /// The container currently listing an item, or nil where it cannot be worked out.
-    ///
-    /// A path-based identity carries its own answer. A personal one does not — that is the point of
-    /// it — so the server is asked, and asked before whatever is about to change it.
-    private func containerOf(_ identity: ItemIdentity) async -> NSFileProviderItemIdentifier? {
-        guard case .personal(let id) = identity else { return identity.parentIdentifier }
-        guard let remote = try? await api.item(id: id) else { return nil }
-        return FileProviderItem.personal(remote).parentItemIdentifier
-    }
 }
 
 /// Turns what this app's own layers throw into what the file provider framework understands.

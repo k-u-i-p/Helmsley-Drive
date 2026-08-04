@@ -1,22 +1,29 @@
 import FileProvider
 import Foundation
 
-/// Tells the system a container's contents moved under it, so Finder reflects the change at once
-/// instead of at the next time something happens to ask.
+/// Tells the system something moved, so Finder reflects it at once instead of at the next time
+/// something happens to ask.
 ///
-/// The bin is signalled twice, because it is held twice: the working set lists exactly what the
-/// trash lists, and the system asks the two for changes separately, from anchors of their own.
-/// Signalling only the container that changed would leave the other saying what the bin held
-/// before — and the working set is the copy Finder reasons about when the trash is not open.
+/// The working set, always, whatever moved. That is not a simplification but the only thing the
+/// framework will act on — `NSFileProviderManager.h`, on `signalEnumeratorForContainerItemIdentifier`:
+///
+/// > When using NSFileProviderReplicatedExtension, only call this method with
+/// > NSFileProviderWorkingSetContainerItemIdentifier. Other container identifiers are ignored. The
+/// > system will automatically propagate working set changes to the UI, without explicitly
+/// > signaling the containers currently being viewed in the UI.
+///
+/// This used to name the container that had changed, which is what a non-replicated extension does
+/// and what every article about them describes. It was accepted and discarded every time: the
+/// enumerator for the folder was never asked for changes, and a document filed in the dashboard sat
+/// there unseen however loudly this said otherwise. The signal is only half the mechanism — what the
+/// system then asks for is the working set's changes, and `BinEnumerator` is where the folders
+/// somebody is looking at are turned into items to report.
 struct ChangeSignal {
 
     let domain: NSFileProviderDomain
 
-    func fire(at container: NSFileProviderItemIdentifier) async {
-        try? await NSFileProviderManager(for: domain)?.signalEnumerator(for: container)
-        if container == .trashContainer {
-            try? await NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet)
-        }
+    func fire() async {
+        try? await NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet)
     }
 }
 
@@ -25,9 +32,9 @@ protocol PolledContainer: AnyObject {
 
     var polledIdentifier: NSFileProviderItemIdentifier { get }
 
-    /// The container's signature as the server has it now — the same fingerprint an enumeration
-    /// would finish with, worked out without reporting anything to anybody.
-    func currentSignature() async throws -> Data
+    /// The container as the server has it now: the items it holds, and the version map a diff and a
+    /// sync anchor are both built from. One request, so the two always describe the same moment.
+    func currentListing() async throws -> ([NSFileProviderItem], SnapshotStore.Snapshot)
 }
 
 /// Watches the folders someone is currently looking at, and signals the ones that have moved on the
@@ -40,26 +47,25 @@ protocol PolledContainer: AnyObject {
 /// looking, so the folder holding it stays as it was until the domain is removed and re-added. That
 /// is the whole of the "I had to sign out and back in" complaint.
 ///
-/// The portal says so with a push now, and this is what turns one into the containers it means. A
-/// file provider push signals the domain's working set and carries nothing else — the payload has
-/// room for one container identifier and the system ignores any but the working set for a replicated
-/// extension — so what arrives is "look again" and no more. `BinEnumerator` calls `checkNow()` when
-/// the signalled working set reaches it, and this asks the folders someone actually has open.
+/// This actor has two jobs, and they are two halves of one mechanism.
 ///
-/// The timer stays, at a fraction of the rate, for everything push cannot promise: a portal with no
-/// APNs key, a device whose registration failed, a push dropped while the machine was asleep. What is
-/// asked about either way is bounded to containers with a live enumerator — the system makes one when
-/// it starts observing a folder and invalidates it when it stops, which is as close to "the user is
-/// looking at this" as anything here gets. A folder nobody has open costs nothing; the tree at large
-/// is never walked.
+/// It is the register of what somebody is looking at. The system makes an enumerator when it starts
+/// observing a folder and invalidates it when it stops, which is as close to "the user has this open"
+/// as anything here gets — and `pendingChanges()` is what the working set's enumerator asks for when
+/// the system comes for changes, since the working set is the only container the system takes them
+/// from. A folder nobody has open costs nothing; the tree at large is never walked.
 ///
-/// One exception: the working set is left out. Its enumerator is made once and kept for as long as
-/// the extension lives, so polling it would mean a request every interval forever, awake or idle,
-/// whether or not anyone is looking at anything. The trash is polled while it is open, and the
-/// working set follows it there because `ChangeSignal` signals both.
+/// And it notices, on a timer, that a folder has moved — which is what turns into a signal. The
+/// portal pushes now, so the timer runs at a fraction of its old rate, and covers what push cannot
+/// promise: a portal with no APNs key, a device whose registration failed, a push dropped while the
+/// machine was asleep.
 ///
-/// Detection costs one listing; the enumeration the signal provokes costs a second. That is the
-/// price of a portal that cannot say what changed, and it is paid only when something has.
+/// One exception to what is watched: the working set is left out. Its enumerator is made once and
+/// kept for as long as the extension lives, so polling it would mean a request every interval
+/// forever. It has no need of it either — it is the container everything is reported *to*.
+///
+/// Detection costs one listing and the reporting enumeration costs a second. That is the price of a
+/// portal that cannot say what changed, and it is paid only when something has.
 actor ChangePoller {
 
     /// Long enough that a folder left open is not a standing load on the portal, short enough that
@@ -142,14 +148,48 @@ actor ChangePoller {
         }
     }
 
-    /// Something changed on the server — asked for now rather than at the next round.
+    /// What has changed in the folders somebody is looking at, as items to report and identifiers to
+    /// drop. Called by the working set's enumerator, which is the only place the system takes changes
+    /// from — a folder's own enumerator is never asked, however loudly its container is signalled.
     ///
-    /// This is the whole of what a push does here. It says nothing about *what* changed, because the
-    /// payload cannot: the containers to look at are the ones with a live enumerator, which is
-    /// knowledge that exists in this process and nowhere else.
-    func checkNow() async {
-        guard !watched.isEmpty else { return }
-        await sweep()
+    /// This is where a push turns into something visible. The payload says only "look again" (it has
+    /// room for one container identifier, and the system ignores any but the working set), so the
+    /// folders to ask about are worked out here, where knowing which ones have an enumerator is
+    /// possible at all.
+    ///
+    /// Each folder's snapshot is recorded as its changes are handed over, so the round that follows
+    /// finds it in step and says nothing. The trash is left out: the working set's own listing is the
+    /// bin, so its diff is already covered and reporting it twice would report every binned item as
+    /// changed whenever the trash happened to be open.
+    func pendingChanges() async -> (updated: [NSFileProviderItem], deleted: [NSFileProviderItemIdentifier]) {
+        var updated: [NSFileProviderItem] = []
+        var deleted: [NSFileProviderItemIdentifier] = []
+
+        for key in Array(watched.keys) {
+            guard let container = watched[key]?.container else {
+                watched[key] = nil
+                continue
+            }
+            let identifier = container.polledIdentifier
+            guard identifier != .trashContainer else { continue }
+
+            do {
+                let (items, snapshot) = try await container.currentListing()
+                let previous = await SnapshotStore.shared.current(for: identifier)
+                guard SnapshotStore.signature(of: previous) != SnapshotStore.signature(of: snapshot) else { continue }
+
+                updated += items.filter { previous[$0.itemIdentifier.rawValue] != snapshot[$0.itemIdentifier.rawValue] }
+                deleted += previous.keys
+                    .filter { snapshot[$0] == nil }
+                    .map(NSFileProviderItemIdentifier.init(_:))
+                await SnapshotStore.shared.record(snapshot, for: identifier)
+            } catch {
+                // The folder keeps what it had, and the next round asks again. Debug rather than
+                // error: a closed laptop would otherwise write a line every time the system asked.
+                Log.enumeration.debug("collecting changes in \(identifier.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        return (updated, deleted)
     }
 
     /// What `PushRegistrar` learned from registering: whether the portal will push this device at
@@ -190,10 +230,9 @@ actor ChangePoller {
 
     /// A round, and then another if one was asked for while it ran.
     ///
-    /// Rounds do not overlap. Two at once would ask the server the same questions twice and could
-    /// signal the same container twice from answers taken a moment apart; the second request simply
-    /// waits for the first to finish and then runs, which is what makes a push landing mid-round
-    /// neither doubled nor lost.
+    /// Rounds do not overlap. Two at once would ask the server the same questions twice and signal
+    /// twice from answers taken a moment apart; a request arriving mid-round simply waits for the one
+    /// in flight to finish and then runs, so it is neither doubled nor lost.
     private func sweep() async {
         guard !sweeping else {
             sweepAgain = true
@@ -232,15 +271,19 @@ actor ChangePoller {
         }
         let identifier = container.polledIdentifier
         do {
-            let current = try await container.currentSignature()
+            let current = SnapshotStore.signature(of: try await container.currentListing().1)
             let held = SnapshotStore.signature(of: await SnapshotStore.shared.current(for: identifier))
             guard current != held else { return }
 
+            // The working set, not this folder — signalling the folder is discarded (see
+            // `ChangeSignal`). What the system then asks the working set for is `pendingChanges()`,
+            // which lists this folder again and reports what moved.
+            //
             // Signalled every round the two disagree, rather than once: the store advances when the
-            // enumeration actually happens, so this stops of its own accord the moment the system
-            // has taken the change — and goes on asking if it has not.
-            Log.enumeration.info("\(identifier.rawValue, privacy: .public) has moved on the server — signalling")
-            await signal.fire(at: identifier)
+            // change is actually handed over, so this stops of its own accord the moment the system
+            // has taken it — and goes on asking if it has not.
+            Log.enumeration.info("\(identifier.rawValue, privacy: .public) has moved on the server — signalling the working set")
+            await signal.fire()
         } catch {
             // A poll that fails changes nothing: the folder keeps what it had and the next round
             // asks again. Debug rather than error, because a closed laptop or a dropped link would
