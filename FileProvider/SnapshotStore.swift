@@ -2,14 +2,14 @@ import CryptoKit
 import FileProvider
 import Foundation
 
-/// Remembers what each folder held last time it was enumerated.
+/// Remembers what each folder held the last few times it was enumerated.
 ///
 /// `enumerateChanges` has to report deletions, and a deletion is the one thing a listing cannot
-/// show you: the server says what is there now, never what has stopped being there. So the last
-/// listing is kept and the two are diffed.
+/// show you: the server says what is there now, never what has stopped being there. So past listings
+/// are kept and the two are diffed.
 ///
 /// On disk in the app group container rather than in memory, because the system asks for changes
-/// from an anchor issued by an earlier launch of the extension — an in-memory snapshot would make
+/// from an anchor issued by an earlier launch of the extension — an in-memory store would make
 /// every cold start look like "everything is new, nothing was deleted", and stale files would sit
 /// in Finder until the user thought to unmount.
 actor SnapshotStore {
@@ -19,8 +19,20 @@ actor SnapshotStore {
     /// item identifier -> version signature, for one container.
     typealias Snapshot = [String: String]
 
+    /// How many past listings a container keeps.
+    ///
+    /// One would do if the anchor the system holds always named this store's most recent listing,
+    /// and most of the time it does. It does not have to. The system samples `currentSyncAnchor` on
+    /// its own schedule, abandons enumerations it has decided against, and comes back from a
+    /// relaunch holding whatever it had when it stopped — any of which leaves it asking from a point
+    /// this process has already moved past. Diffing that against the newest listing is how a change
+    /// gets quietly answered "nothing here", so a few are kept and the right one is chosen.
+    private static let retained = 5
+
     private let directory: URL?
-    private var memory: [String: Snapshot] = [:]
+
+    /// Oldest first; the last is the container as it was last listed.
+    private var memory: [String: [Snapshot]] = [:]
 
     init() {
         directory = FileManager.default
@@ -31,20 +43,30 @@ actor SnapshotStore {
         }
     }
 
-    func snapshot(for container: NSFileProviderItemIdentifier) -> Snapshot {
-        let key = Self.key(container)
-        if let cached = memory[key] { return cached }
-        guard let url = fileURL(key),
-              let data = try? Data(contentsOf: url),
-              let stored = try? JSONDecoder().decode(Snapshot.self, from: data) else { return [:] }
-        memory[key] = stored
-        return stored
+    /// The container as it was last listed — what `currentSyncAnchor` describes.
+    func current(for container: NSFileProviderItemIdentifier) -> Snapshot {
+        history(for: container).last ?? Snapshot()
     }
 
-    func store(_ snapshot: Snapshot, for container: NSFileProviderItemIdentifier) {
+    /// The listing an anchor was issued for, or nil where it is no longer held.
+    ///
+    /// Nil is the answer that matters: it means the diff the system asked for cannot be computed,
+    /// and the caller must say so with `.syncAnchorExpired` rather than reporting no changes.
+    func snapshot(matching anchor: NSFileProviderSyncAnchor, for container: NSFileProviderItemIdentifier) -> Snapshot? {
+        history(for: container).last { Self.signature(of: $0) == anchor.rawValue }
+    }
+
+    /// Adds a listing to what the container is known to have been.
+    func record(_ snapshot: Snapshot, for container: NSFileProviderItemIdentifier) {
+        var history = history(for: container)
+        // A listing identical to the last adds nothing to remember, and would push a genuinely
+        // older one out of the window for no gain.
+        if history.last != snapshot { history.append(snapshot) }
+        if history.count > Self.retained { history.removeFirst(history.count - Self.retained) }
+
         let key = Self.key(container)
-        memory[key] = snapshot
-        guard let url = fileURL(key), let data = try? JSONEncoder().encode(snapshot) else { return }
+        memory[key] = history
+        guard let url = fileURL(key), let data = try? JSONEncoder().encode(history) else { return }
         try? data.write(to: url, options: .atomic)
     }
 
@@ -62,6 +84,25 @@ actor SnapshotStore {
         for url in (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] {
             try? FileManager.default.removeItem(at: url)
         }
+    }
+
+    private func history(for container: NSFileProviderItemIdentifier) -> [Snapshot] {
+        let key = Self.key(container)
+        if let cached = memory[key] { return cached }
+        // A container nothing has been listed for is empty, which is a state an anchor can name —
+        // so it is remembered as one rather than as nothing at all.
+        let loaded = load(key) ?? [Snapshot()]
+        memory[key] = loaded
+        return loaded
+    }
+
+    private func load(_ key: String) -> [Snapshot]? {
+        guard let url = fileURL(key), let data = try? Data(contentsOf: url) else { return nil }
+        if let history = try? JSONDecoder().decode([Snapshot].self, from: data) { return history }
+        // What a version of this store that kept only the newest listing wrote. Read rather than
+        // discarded, so an update does not re-list every folder the user has ever opened.
+        guard let single = try? JSONDecoder().decode(Snapshot.self, from: data) else { return nil }
+        return [single]
     }
 
     private func fileURL(_ key: String) -> URL? {

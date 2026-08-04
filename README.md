@@ -100,8 +100,30 @@ tell a stripped redirect from one that quietly carried the token on.
 The portal has no change feed — `documents` records an upload date and nothing else — so "what
 changed" is computed in the extension, by listing a folder and diffing it against what that folder
 held last time (`FileProvider/SnapshotStore.swift`, persisted so a cold start still knows what has
-been removed). Changes made in the dashboard therefore appear when the system next asks: on refresh,
-on navigating in, and immediately after any upload or delete made from Finder.
+been removed).
+
+Nothing asks on its own. This is a replicated extension, so the system owns the copy: a folder is
+enumerated once and thereafter the system asks only for *changes*, and only when this extension says
+there are some. Finder's refresh does not provoke a listing and navigating back into a folder does
+not either — that is the old non-replicated behaviour, and assuming it here is what left a document
+filed in the dashboard invisible until the volume was removed and re-added.
+
+So the extension says so itself. Every write made through Finder signals its folder directly.
+Everything else is `FileProvider/ChangePoller.swift`: an enumerator registers while the system is
+observing its folder, the poller re-lists those folders every 30 seconds, and a folder whose
+signature has moved is signalled. It asks about the folders someone has open and nothing else — the
+tree at large is never walked, and a folder nobody is looking at costs nothing. The working set is
+excluded deliberately: its enumerator lives as long as the extension does, so polling it would be a
+request every interval forever. If the portal ever grows push, `ChangeSignal` is the seam — the
+poller goes and the payload signals the same containers.
+
+Sync anchors are checked rather than assumed. `enumerateChanges` diffs against the listing the
+incoming anchor was actually issued for, which is why `SnapshotStore` keeps the last few rather than
+only the newest: the system samples `currentSyncAnchor` on its own schedule and can come back asking
+from a point this process has moved past. An anchor no longer held is answered with
+`.syncAnchorExpired`, which costs one full re-listing. The alternative — diffing against the newest
+listing whatever was asked for — reports no changes and has the system record itself as up to date
+having never been told what it missed, which is a folder that stays wrong until the next remount.
 
 The working set holds the bin and nothing else. Filling it with the tree would mean enumerating
 every document of every client of every syndicate on a schedule nobody asked for; folders enumerate

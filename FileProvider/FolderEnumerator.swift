@@ -19,21 +19,38 @@ private func nameable(_ item: FileProviderItem, in container: String) -> Bool {
 /// The portal has no change feed — `documents` records an upload date and nothing else — so
 /// "changed" is computed here, by listing the folder and diffing against what it held last time
 /// (`SnapshotStore`). That is enough to be correct: every item carries a version derived from its
-/// content hash, so an edit, an addition and a removal are all visible in the diff. What it cannot
-/// be is instantaneous — a change made in the dashboard shows up when the system next asks, which
-/// it does on refresh, on navigation, and whenever this extension signals it after a write of its
-/// own.
-final class FolderEnumerator: NSObject, NSFileProviderEnumerator {
+/// content hash, so an edit, an addition and a removal are all visible in the diff.
+///
+/// What it cannot be is instantaneous. The system asks for changes when it is told there are some,
+/// and nothing about a document filed in the dashboard reaches this process on its own — so a live
+/// enumerator registers with `ChangePoller`, which asks the server on a timer and signals when the
+/// answer stops matching. That is what keeps an open folder current; a write made through Finder
+/// signals directly and does not wait for it.
+final class FolderEnumerator: NSObject, NSFileProviderEnumerator, PolledContainer {
 
     private let identity: ItemIdentity
     private let api = HelmsleyAPI.shared
+    private let poller: ChangePoller
 
-    init(identity: ItemIdentity) {
+    var polledIdentifier: NSFileProviderItemIdentifier { identity.identifier }
+
+    init(identity: ItemIdentity, watchedBy poller: ChangePoller) {
         self.identity = identity
+        self.poller = poller
         super.init()
+        Task { await poller.watch(self) }
     }
 
-    func invalidate() {}
+    /// The system is done observing this folder, so it stops being polled. Nothing else is torn
+    /// down: the snapshot belongs to the container, not to this object, and the next enumerator for
+    /// the same folder picks up where this one left off.
+    func invalidate() {
+        Task { [poller, self] in await poller.stopWatching(self) }
+    }
+
+    func currentSignature() async throws -> Data {
+        SnapshotStore.signature(of: try await listing().1)
+    }
 
     // MARK: - Full enumeration
 
@@ -41,7 +58,7 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator {
         Task {
             do {
                 let (items, snapshot) = try await listing()
-                await SnapshotStore.shared.store(snapshot, for: identity.identifier)
+                await SnapshotStore.shared.record(snapshot, for: identity.identifier)
                 Log.enumeration.info("listed \(self.identity.destination.logDescription, privacy: .public) — \(items.count, privacy: .public) items")
                 observer.didEnumerate(items)
                 // No paging: `/api/files/list` answers a whole folder in one query, ordered by the
@@ -59,9 +76,20 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator {
 
     func enumerateChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
         Task {
+            // The listing the anchor was issued for, looked up before the request rather than after:
+            // a diff against any other listing is not the diff that was asked for, and answering one
+            // as though it were leaves the system recording itself as up to date having never been
+            // told what it missed. `.syncAnchorExpired` is the framework's word for it — the system
+            // drops what it holds for the folder and asks for a full listing, which costs one extra
+            // request the once and is right from then on.
+            guard let previous = await SnapshotStore.shared.snapshot(matching: anchor, for: identity.identifier) else {
+                Log.enumeration.info("\(self.identity.destination.logDescription, privacy: .public) was asked for changes from an anchor it no longer holds — asking for a full listing")
+                observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+                return
+            }
+
             do {
                 let (items, snapshot) = try await listing()
-                let previous = await SnapshotStore.shared.snapshot(for: identity.identifier)
 
                 // Anything new, and anything whose version moved. An unchanged item is left out
                 // entirely — reporting it would have the system re-download bytes it already holds.
@@ -70,7 +98,7 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator {
                     .filter { snapshot[$0] == nil }
                     .map(NSFileProviderItemIdentifier.init(_:))
 
-                await SnapshotStore.shared.store(snapshot, for: identity.identifier)
+                await SnapshotStore.shared.record(snapshot, for: identity.identifier)
 
                 Log.enumeration.info("changes in \(self.identity.destination.logDescription, privacy: .public) — \(changed.count, privacy: .public) updated, \(deleted.count, privacy: .public) deleted")
                 if !deleted.isEmpty { observer.didDeleteItems(withIdentifiers: deleted) }
@@ -85,7 +113,7 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator {
 
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
         Task {
-            let snapshot = await SnapshotStore.shared.snapshot(for: identity.identifier)
+            let snapshot = await SnapshotStore.shared.current(for: identity.identifier)
             completionHandler(NSFileProviderSyncAnchor(SnapshotStore.signature(of: snapshot)))
         }
     }
@@ -156,14 +184,26 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator {
 /// what has left the bin — put back, or purged — is only visible by comparing against what it held
 /// last time. Each container keeps its own snapshot, because the system asks the two for changes
 /// independently and from anchors of their own.
-final class BinEnumerator: NSObject, NSFileProviderEnumerator {
+final class BinEnumerator: NSObject, NSFileProviderEnumerator, PolledContainer {
 
     private let container: NSFileProviderItemIdentifier
     private let api = HelmsleyAPI.shared
+    private let poller: ChangePoller
 
-    init(container: NSFileProviderItemIdentifier) {
+    var polledIdentifier: NSFileProviderItemIdentifier { container }
+
+    init(container: NSFileProviderItemIdentifier, watchedBy poller: ChangePoller) {
         self.container = container
+        self.poller = poller
         super.init()
+        // Only the trash is taken up: the working set's enumerator is made once and kept for as
+        // long as the extension lives, and `ChangePoller` declines it for that reason. It hears
+        // about the bin anyway, since signalling the trash signals the working set with it.
+        Task { await poller.watch(self) }
+    }
+
+    func currentSignature() async throws -> Data {
+        SnapshotStore.signature(of: try await listing().1)
     }
 
     /// For the log, where "the trash" and "the working set" are worth telling apart.
@@ -171,13 +211,15 @@ final class BinEnumerator: NSObject, NSFileProviderEnumerator {
         container == .workingSet ? "working set" : "trash"
     }
 
-    func invalidate() {}
+    func invalidate() {
+        Task { [poller, self] in await poller.stopWatching(self) }
+    }
 
     func enumerateItems(for observer: NSFileProviderEnumerationObserver, startingAt page: NSFileProviderPage) {
         Task {
             do {
                 let (items, snapshot) = try await listing()
-                await SnapshotStore.shared.store(snapshot, for: container)
+                await SnapshotStore.shared.record(snapshot, for: container)
                 Log.enumeration.info("\(self.describing, privacy: .public) — \(items.count, privacy: .public) items")
                 observer.didEnumerate(items)
                 observer.finishEnumerating(upTo: nil)
@@ -190,16 +232,21 @@ final class BinEnumerator: NSObject, NSFileProviderEnumerator {
 
     func enumerateChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
         Task {
+            guard let previous = await SnapshotStore.shared.snapshot(matching: anchor, for: container) else {
+                Log.enumeration.info("the \(self.describing, privacy: .public) was asked for changes from an anchor it no longer holds — asking for a full listing")
+                observer.finishEnumeratingWithError(NSFileProviderError(.syncAnchorExpired))
+                return
+            }
+
             do {
                 let (items, snapshot) = try await listing()
-                let previous = await SnapshotStore.shared.snapshot(for: container)
 
                 let changed = items.filter { previous[$0.itemIdentifier.rawValue] != snapshot[$0.itemIdentifier.rawValue] }
                 let deleted = previous.keys
                     .filter { snapshot[$0] == nil }
                     .map(NSFileProviderItemIdentifier.init(_:))
 
-                await SnapshotStore.shared.store(snapshot, for: container)
+                await SnapshotStore.shared.record(snapshot, for: container)
 
                 Log.enumeration.info("\(self.describing, privacy: .public) — \(changed.count, privacy: .public) updated, \(deleted.count, privacy: .public) gone")
                 if !deleted.isEmpty { observer.didDeleteItems(withIdentifiers: deleted) }
@@ -214,7 +261,7 @@ final class BinEnumerator: NSObject, NSFileProviderEnumerator {
 
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
         Task {
-            let snapshot = await SnapshotStore.shared.snapshot(for: container)
+            let snapshot = await SnapshotStore.shared.current(for: container)
             completionHandler(NSFileProviderSyncAnchor(SnapshotStore.signature(of: snapshot)))
         }
     }

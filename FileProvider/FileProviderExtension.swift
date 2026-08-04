@@ -10,11 +10,13 @@ import UniformTypeIdentifiers
 /// database views, and nothing about it maps onto a directory a provider could hand over.
 final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
-    private let domain: NSFileProviderDomain
     private let api = HelmsleyAPI.shared
+    private let signal: ChangeSignal
+    private let poller: ChangePoller
 
     required init(domain: NSFileProviderDomain) {
-        self.domain = domain
+        self.signal = ChangeSignal(domain: domain)
+        self.poller = ChangePoller(signal: signal)
         super.init()
         Log.provider.info("extension loaded for domain \(domain.identifier.rawValue, privacy: .public), portal \(Configuration.baseURL.absoluteString, privacy: .public)")
     }
@@ -185,7 +187,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let work = Task {
             do {
                 let remote = try await api.upload(to: destination, filename: filename, mime: mime, fileURL: contents, reporting: progress)
-                await signalChange(at: itemTemplate.parentItemIdentifier)
+                await signal.fire(at: itemTemplate.parentItemIdentifier)
                 // No pending fields and nothing still uploading: the document is filed by the time
                 // this returns, because the finalise step is what created it.
                 completionHandler(FileProviderItem.file(in: parent, remote: remote), [], false, nil)
@@ -213,7 +215,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let work = Task {
             do {
                 let remote = try await api.createFolder(in: parent.destination, name: name)
-                await signalChange(at: parent.identifier)
+                await signal.fire(at: parent.identifier)
                 completionHandler(FileProviderItem.folder(in: parent, remote: remote), [], false, nil)
             } catch {
                 Log.provider.error("creating a folder in \(parent.destination.logDescription, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
@@ -293,8 +295,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 }
 
                 let updated = try await self.item(for: settled)
-                await signalChange(at: source)
-                if updated.parentItemIdentifier != source { await signalChange(at: updated.parentItemIdentifier) }
+                await signal.fire(at: source)
+                if updated.parentItemIdentifier != source { await signal.fire(at: updated.parentItemIdentifier) }
                 completionHandler(updated, [], false, nil)
             } catch {
                 Log.provider.error("modifying \(itemID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
@@ -388,7 +390,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 // folder takes what is under it — including anything already in the bin from inside
                 // it, which is gone either way once the folder holding it is.
                 try await api.delete(id: itemID)
-                if let container { await signalChange(at: container) }
+                if let container { await signal.fire(at: container) }
                 completionHandler(nil)
             } catch let error where (error as? APIError)?.isNotFound == true {
                 // Already gone — which is the outcome asked for, so it is not a failure.
@@ -416,13 +418,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         // for trashed items there by name, and holding the rest of this tree in it would mean
         // indexing every document of every client of every syndicate.
         if containerItemIdentifier == .workingSet || containerItemIdentifier == .trashContainer {
-            return BinEnumerator(container: containerItemIdentifier)
+            return BinEnumerator(container: containerItemIdentifier, watchedBy: poller)
         }
 
         guard let identity = ItemIdentity(containerItemIdentifier), !isDocument(identity) else {
             throw NSFileProviderError(.noSuchItem)
         }
-        return FolderEnumerator(identity: identity)
+        return FolderEnumerator(identity: identity, watchedBy: poller)
     }
 
     /// A document is never a container. A personal identity may be either, and the enumerator finds
@@ -440,20 +442,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         guard case .personal(let id) = identity else { return identity.parentIdentifier }
         guard let remote = try? await api.item(id: id) else { return nil }
         return FileProviderItem.personal(remote).parentItemIdentifier
-    }
-
-    /// Tells the system a folder's contents moved under it, so Finder reflects an upload or a
-    /// delete at once instead of at the next time something happens to ask.
-    ///
-    /// The bin is signalled twice, because it is held twice: the working set lists exactly what the
-    /// trash lists, and the system asks the two for changes separately, from anchors of their own.
-    /// Signalling only the container that changed would leave the other saying what the bin held
-    /// before — and the working set is the copy Finder reasons about when the trash is not open.
-    private func signalChange(at container: NSFileProviderItemIdentifier) async {
-        try? await NSFileProviderManager(for: domain)?.signalEnumerator(for: container)
-        if container == .trashContainer {
-            try? await NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet)
-        }
     }
 }
 

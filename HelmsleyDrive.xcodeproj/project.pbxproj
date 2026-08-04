@@ -28,6 +28,7 @@
 		HD000000000000000000001F /* FileProviderItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000020 /* FileProviderItem.swift */; };
 		HD0000000000000000000021 /* FolderEnumerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000022 /* FolderEnumerator.swift */; };
 		HD0000000000000000000023 /* SnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000024 /* SnapshotStore.swift */; };
+		HD000000000000000000007E /* ChangePoller.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000007D /* ChangePoller.swift */; };
 		HD0000000000000000000025 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000026 /* Assets.xcassets */; };
 		HD0000000000000000000027 /* Configuration.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000002 /* Configuration.swift */; };
 		HD0000000000000000000028 /* Log.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000004 /* Log.swift */; };
@@ -50,6 +51,7 @@
 		HD000000000000000000003C /* FileProviderItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000020 /* FileProviderItem.swift */; };
 		HD000000000000000000003D /* FolderEnumerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000022 /* FolderEnumerator.swift */; };
 		HD000000000000000000003E /* SnapshotStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000024 /* SnapshotStore.swift */; };
+		HD000000000000000000007F /* ChangePoller.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000007D /* ChangePoller.swift */; };
 		HD000000000000000000003F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000040 /* Assets.xcassets */; };
 		HD0000000000000000000041 /* HelmsleyFileProvider.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000042 /* HelmsleyFileProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		HD0000000000000000000043 /* HelmsleyFileProvider-iOS.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000044 /* HelmsleyFileProvider-iOS.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -98,6 +100,7 @@
 		HD0000000000000000000020 /* FileProviderItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileProviderItem.swift; sourceTree = "<group>"; };
 		HD0000000000000000000022 /* FolderEnumerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FolderEnumerator.swift; sourceTree = "<group>"; };
 		HD0000000000000000000024 /* SnapshotStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SnapshotStore.swift; sourceTree = "<group>"; };
+		HD000000000000000000007D /* ChangePoller.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChangePoller.swift; sourceTree = "<group>"; };
 		HD0000000000000000000026 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		HD0000000000000000000049 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		HD000000000000000000004A /* FileProvider.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FileProvider.entitlements; sourceTree = "<group>"; };
@@ -157,6 +160,7 @@
 				HD0000000000000000000020 /* FileProviderItem.swift */,
 				HD0000000000000000000022 /* FolderEnumerator.swift */,
 				HD0000000000000000000024 /* SnapshotStore.swift */,
+				HD000000000000000000007D /* ChangePoller.swift */,
 				HD0000000000000000000026 /* Assets.xcassets */,
 				HD0000000000000000000049 /* Info.plist */,
 				HD000000000000000000004A /* FileProvider.entitlements */,
@@ -309,6 +313,7 @@
 				HD000000000000000000001D,
 				HD000000000000000000001F,
 				HD0000000000000000000021,
+				HD000000000000000000007E,
 				HD0000000000000000000023,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -343,6 +348,7 @@
 				HD000000000000000000003B,
 				HD000000000000000000003C,
 				HD000000000000000000003D,
+				HD000000000000000000007F,
 				HD000000000000000000003E,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
