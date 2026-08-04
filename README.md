@@ -103,8 +103,11 @@ held last time (`FileProvider/SnapshotStore.swift`, persisted so a cold start st
 been removed). Changes made in the dashboard therefore appear when the system next asks: on refresh,
 on navigating in, and immediately after any upload or delete made from Finder.
 
-The working set is deliberately empty. Filling it would mean enumerating every document of every
-client of every syndicate on a schedule nobody asked for; folders enumerate on demand instead.
+The working set holds the bin and nothing else. Filling it with the tree would mean enumerating
+every document of every client of every syndicate on a schedule nobody asked for; folders enumerate
+on demand instead. The bin is the exception that argument never covered — it is bounded by what one
+admin threw away, and the framework asks for trashed items there by name, because an item the system
+knows only as a row in a container it is not looking at is one Finder can show but not reason about.
 
 ## What the volume can and cannot do
 

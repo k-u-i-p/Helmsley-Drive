@@ -131,23 +131,45 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator {
     }
 }
 
-/// What has been thrown away out of the admin's own folder.
+/// What has been thrown away out of the admin's own folder, under either of the two containers that
+/// hold it.
 ///
-/// One container for the whole volume, which is what the framework offers and what the portal has:
-/// a trashed row keeps the folder it was in, so nothing needs a bin per directory to know where a
+/// One bin for the whole volume, which is what the framework offers and what the portal has: a
+/// trashed row keeps the folder it was in, so nothing needs a bin per directory to know where a
 /// thing came from. The classified tree contributes nothing — a document has no path to be put back
 /// along, and deleting one is final there as it is in the dashboard.
 ///
 /// What is listed is the top of each thing thrown away. A directory takes its contents with it, so
 /// the bin offers the directory; the files inside it are still in the table, still under it, and
-/// come back with it.
+/// come back with it. That is also what the working set asks for in so many words — trashed items
+/// belong in it, and the children of trashed directories do not.
+///
+/// The working set is the same listing because here it holds nothing else. It is the set the system
+/// keeps knowledge of outside any open folder, and filling it with the tree would mean enumerating
+/// every document of every client of every syndicate on a schedule nobody asked for — the cost of
+/// indexing the building rather than of opening one drawer. The bin is the exception that argument
+/// never covered: it is small, it is bounded by what one admin threw away, and the framework wants
+/// it there. An item the system knows only as a row in a container it is not looking at is an item
+/// Finder can show but not reason about, which is what Put Back needs it to do.
 ///
 /// The same listing-and-diffing as a folder, for the same reason: the portal has no change feed, so
 /// what has left the bin — put back, or purged — is only visible by comparing against what it held
-/// last time.
-final class TrashEnumerator: NSObject, NSFileProviderEnumerator {
+/// last time. Each container keeps its own snapshot, because the system asks the two for changes
+/// independently and from anchors of their own.
+final class BinEnumerator: NSObject, NSFileProviderEnumerator {
 
+    private let container: NSFileProviderItemIdentifier
     private let api = HelmsleyAPI.shared
+
+    init(container: NSFileProviderItemIdentifier) {
+        self.container = container
+        super.init()
+    }
+
+    /// For the log, where "the trash" and "the working set" are worth telling apart.
+    private var describing: String {
+        container == .workingSet ? "working set" : "trash"
+    }
 
     func invalidate() {}
 
@@ -155,12 +177,12 @@ final class TrashEnumerator: NSObject, NSFileProviderEnumerator {
         Task {
             do {
                 let (items, snapshot) = try await listing()
-                await SnapshotStore.shared.store(snapshot, for: .trashContainer)
-                Log.enumeration.info("trash — \(items.count, privacy: .public) items")
+                await SnapshotStore.shared.store(snapshot, for: container)
+                Log.enumeration.info("\(self.describing, privacy: .public) — \(items.count, privacy: .public) items")
                 observer.didEnumerate(items)
                 observer.finishEnumerating(upTo: nil)
             } catch {
-                Log.enumeration.error("listing the trash failed: \(error.localizedDescription, privacy: .public)")
+                Log.enumeration.error("listing the \(self.describing, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 observer.finishEnumeratingWithError(FileProviderError.translate(error))
             }
         }
@@ -170,21 +192,21 @@ final class TrashEnumerator: NSObject, NSFileProviderEnumerator {
         Task {
             do {
                 let (items, snapshot) = try await listing()
-                let previous = await SnapshotStore.shared.snapshot(for: .trashContainer)
+                let previous = await SnapshotStore.shared.snapshot(for: container)
 
                 let changed = items.filter { previous[$0.itemIdentifier.rawValue] != snapshot[$0.itemIdentifier.rawValue] }
                 let deleted = previous.keys
                     .filter { snapshot[$0] == nil }
                     .map(NSFileProviderItemIdentifier.init(_:))
 
-                await SnapshotStore.shared.store(snapshot, for: .trashContainer)
+                await SnapshotStore.shared.store(snapshot, for: container)
 
-                Log.enumeration.info("trash — \(changed.count, privacy: .public) updated, \(deleted.count, privacy: .public) gone")
+                Log.enumeration.info("\(self.describing, privacy: .public) — \(changed.count, privacy: .public) updated, \(deleted.count, privacy: .public) gone")
                 if !deleted.isEmpty { observer.didDeleteItems(withIdentifiers: deleted) }
                 if !changed.isEmpty { observer.didUpdate(changed) }
                 observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(SnapshotStore.signature(of: snapshot)), moreComing: false)
             } catch {
-                Log.enumeration.error("changes in the trash failed: \(error.localizedDescription, privacy: .public)")
+                Log.enumeration.error("changes in the \(self.describing, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 observer.finishEnumeratingWithError(FileProviderError.translate(error))
             }
         }
@@ -192,7 +214,7 @@ final class TrashEnumerator: NSObject, NSFileProviderEnumerator {
 
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
         Task {
-            let snapshot = await SnapshotStore.shared.snapshot(for: .trashContainer)
+            let snapshot = await SnapshotStore.shared.snapshot(for: container)
             completionHandler(NSFileProviderSyncAnchor(SnapshotStore.signature(of: snapshot)))
         }
     }
@@ -203,35 +225,10 @@ final class TrashEnumerator: NSObject, NSFileProviderEnumerator {
 
         for entry in try await api.trashed() {
             let item = FileProviderItem.personal(entry)
-            guard nameable(item, in: "the trash") else { continue }
+            guard nameable(item, in: describing) else { continue }
             items.append(item)
             snapshot[item.itemIdentifier.rawValue] = "\(entry.version)|\(entry.filename)"
         }
         return (items, snapshot)
-    }
-}
-
-/// The working set is the set of items the system keeps knowledge of outside any open folder — what
-/// backs Spotlight, recents, and offline availability.
-///
-/// Deliberately empty. Filling it would mean enumerating the whole tree, which for this portal is
-/// every document of every client of every syndicate, on a schedule the user never asked for. Folders
-/// enumerate on demand instead, which is what a filing cabinet of this shape wants: the cost of
-/// opening one drawer, not of indexing the building.
-final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
-
-    func invalidate() {}
-
-    func enumerateItems(for observer: NSFileProviderEnumerationObserver, startingAt page: NSFileProviderPage) {
-        observer.didEnumerate([])
-        observer.finishEnumerating(upTo: nil)
-    }
-
-    func enumerateChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
-        observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
-    }
-
-    func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
-        completionHandler(NSFileProviderSyncAnchor(Data("working-set".utf8)))
     }
 }

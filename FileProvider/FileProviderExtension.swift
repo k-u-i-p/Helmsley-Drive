@@ -408,11 +408,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         request: NSFileProviderRequest
     ) throws -> NSFileProviderEnumerator {
         Log.provider.info("enumerator requested for \(containerItemIdentifier.rawValue, privacy: .public)")
-        if containerItemIdentifier == .workingSet { return WorkingSetEnumerator() }
         // One bin for the volume, holding what has been thrown out of the admin's own folder. The
         // classified tree puts nothing in it — a document has no path to be put back along, and
         // deleting one there is final, as it is in the dashboard.
-        if containerItemIdentifier == .trashContainer { return TrashEnumerator() }
+        //
+        // The working set answers with the same listing, and with nothing else: the framework asks
+        // for trashed items there by name, and holding the rest of this tree in it would mean
+        // indexing every document of every client of every syndicate.
+        if containerItemIdentifier == .workingSet || containerItemIdentifier == .trashContainer {
+            return BinEnumerator(container: containerItemIdentifier)
+        }
 
         guard let identity = ItemIdentity(containerItemIdentifier), !isDocument(identity) else {
             throw NSFileProviderError(.noSuchItem)
@@ -439,8 +444,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     /// Tells the system a folder's contents moved under it, so Finder reflects an upload or a
     /// delete at once instead of at the next time something happens to ask.
+    ///
+    /// The bin is signalled twice, because it is held twice: the working set lists exactly what the
+    /// trash lists, and the system asks the two for changes separately, from anchors of their own.
+    /// Signalling only the container that changed would leave the other saying what the bin held
+    /// before — and the working set is the copy Finder reasons about when the trash is not open.
     private func signalChange(at container: NSFileProviderItemIdentifier) async {
         try? await NSFileProviderManager(for: domain)?.signalEnumerator(for: container)
+        if container == .trashContainer {
+            try? await NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet)
+        }
     }
 }
 

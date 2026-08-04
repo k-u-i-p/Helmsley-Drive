@@ -136,7 +136,7 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
             }
         case .binned, .covered:
             // A folder listed out of the bin. Open it and purge it — nothing else reaches inside a
-            // thrown-away subtree, and the bin's own top level is listed by TrashEnumerator rather
+            // thrown-away subtree, and the bin's own top level is listed by BinEnumerator rather
             // than by this, so what arrives here is always something further in.
             capabilities.insert(.allowsDeleting)
         }
