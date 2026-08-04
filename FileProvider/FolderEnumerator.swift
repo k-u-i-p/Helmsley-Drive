@@ -149,8 +149,8 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator {
 /// every document of every client of every syndicate on a schedule nobody asked for — the cost of
 /// indexing the building rather than of opening one drawer. The bin is the exception that argument
 /// never covered: it is small, it is bounded by what one admin threw away, and the framework wants
-/// it there. An item the system knows only as a row in a container it is not looking at is an item
-/// Finder can show but not reason about, which is what Put Back needs it to do.
+/// it there. What it buys is knowledge the system keeps when nothing is looking — the bin is in
+/// Spotlight, and the system stops learning about it only when someone opens the trash.
 ///
 /// The same listing-and-diffing as a folder, for the same reason: the portal has no change feed, so
 /// what has left the bin — put back, or purged — is only visible by comparing against what it held

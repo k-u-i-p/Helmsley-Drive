@@ -277,7 +277,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 // Where the item is *now*, asked of the server rather than read off the item. The
                 // one handed over describes what it should become — its parentItemIdentifier is the
                 // destination — so the folder being left behind has to be looked up, and it is what
-                // tells a put-back apart from an ordinary move.
+                // tells a restore apart from an ordinary move.
                 let source = FileProviderItem.personal(try await api.item(id: itemID)).parentItemIdentifier
 
                 if relocation.contains(.parentItemIdentifier) {
@@ -310,10 +310,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     /// them is the trash.
     ///
     /// The framework has no separate verb for throwing something away: it reparents the item into
-    /// `.trashContainer` and expects the item to come back saying it is trashed. Putting it back is
-    /// the same move in reverse, and Finder's Put Back names the folder it came from — which is the
-    /// folder the row never stopped recording, so the two agree without this having to remember
-    /// anything.
+    /// `.trashContainer` and expects the item to come back saying it is trashed. Taking it out again
+    /// is the same move in reverse — an undo, or a drag out of the bin — and the move names where it
+    /// is going, so nothing here has to remember where the item was. Finder's own Put Back never
+    /// sends one and cannot be made to; the trash section of the README says why.
     private func reparent(
         _ itemID: String,
         from source: NSFileProviderItemIdentifier,

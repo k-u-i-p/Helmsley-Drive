@@ -59,7 +59,7 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     /// is even marked — and that is the one that can be put back. Everything under it is reachable
     /// only by looking inside, and the portal refuses to rename or refile any of it; a restore is
     /// worse than refused, answering by doing nothing at all, since the mark it would clear is on
-    /// the folder above. Offering Put Back down there would be a gesture that silently did nothing.
+    /// the folder above. Offering a restore down there would be a gesture that silently did nothing.
     ///
     /// What is left inside is reading and purging, and both are real: bytes are still fetched by id,
     /// and a delete still takes the row and everything under it.

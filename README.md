@@ -106,8 +106,8 @@ on navigating in, and immediately after any upload or delete made from Finder.
 The working set holds the bin and nothing else. Filling it with the tree would mean enumerating
 every document of every client of every syndicate on a schedule nobody asked for; folders enumerate
 on demand instead. The bin is the exception that argument never covered — it is bounded by what one
-admin threw away, and the framework asks for trashed items there by name, because an item the system
-knows only as a row in a container it is not looking at is one Finder can show but not reason about.
+admin threw away, and the framework asks for trashed items there by name. What it buys is Spotlight:
+the bin is indexed, and the system stops learning about it only when someone opens the trash.
 
 ## What the volume can and cannot do
 
@@ -204,8 +204,20 @@ Trashing keeps the bytes. Only a purge reaches the bucket, and it goes through t
 `releaseBytes` that asks both tables whether anything still names those bytes.
 
 The framework has no separate verb for any of this: an item is trashed by being reparented into
-`.trashContainer` and put back by being reparented out, and `isTrashed` is iOS-only, so hanging
+`.trashContainer` and restored by being reparented out, and `isTrashed` is iOS-only, so hanging
 under that container is the entire signal.
+
+Finder's **Put Back** is not offered on any of it, and nothing here can make it be. Nothing in
+`NSFileProviderItem` carries where an item came from — the header is explicit that "the parents of
+trashed items and of the root item are ignored" — so there is no origin to report even in principle.
+Finder does not need one reported: it writes the origin itself, as `ptbL`/`ptbN` records in the
+domain's own `.Trash/.DS_Store`, correctly and for a folder as readily as for a file, and then does
+not read them back for a file-provider trash. That was measured rather than assumed — the records
+were decoded off disk while the menu stayed empty — so a future attempt wants a macOS release note
+behind it, not another pass at the extension. Restoring is undo or a drag out of the bin; both arrive
+as an ordinary reparent, and both work. `mv(1)` does not, on a folder: a binned directory has no `w`
+bit, because the bit is `.allowsAddingSubItems` and nothing may be dropped into something thrown
+away. Finder's move goes through the daemon and is authorised against `.allowsReparenting` instead.
 
 Documents are deliberately excluded. A row there has no path to be put back along; its content hash
 is unique table-wide, so a trashed one would go on forbidding a re-upload of a file nobody can see;

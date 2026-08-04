@@ -274,8 +274,8 @@ struct HelmsleyAPI: Sendable {
         _ = try await post(itemURL(id, "trash"), body: [:]) as Empty
     }
 
-    /// Out again — into `destination` where one is named, which is what Put Back supplies, and back
-    /// where it was otherwise. The name may come back numbered: while the row sat in the bin its
+    /// Out again — into `destination` where one is named, which is what a drag out of the bin
+    /// supplies, and back where it was otherwise. The name may come back numbered: while the row sat in the bin its
     /// name was not in use, so something else may have taken it in the meantime.
     @discardableResult
     func restore(id: String, to destination: Destination?) async throws -> String {
