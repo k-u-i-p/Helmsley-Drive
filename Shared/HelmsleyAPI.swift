@@ -27,8 +27,18 @@ struct RemoteFile: Codable, Sendable, Equatable {
     let isDir: Bool?
     let trashed: Bool?
 
+    /// Whether something *above* this row was thrown away, which `/items/:id` answers and a listing
+    /// does not need to: a listing learns it once, from the folder it asked for.
+    ///
+    /// Not the same as being trashed, and deliberately not folded into it. A covered row still hangs
+    /// under the folder it always did — putting it in the bin as well would show it twice — but the
+    /// writes it may offer are the same none, since the portal refuses to rename or refile anything
+    /// under a trashed folder and answers a restore of one by doing nothing at all.
+    let covered: Bool?
+
     var isFolder: Bool { isDir == true }
     var isTrashed: Bool { trashed == true }
+    var isCovered: Bool { covered == true }
 }
 
 /// One subfolder. `segment` is what goes back in a path; `name` is what a person reads. They differ
@@ -50,6 +60,15 @@ struct Listing: Codable, Sendable {
     let files: [RemoteFile]
     let writable: Bool
     let accept: [String]
+
+    /// Whether the folder listed is in the bin — itself thrown away, or under something that was.
+    ///
+    /// Not inferable from `writable`, which is false all over the classified tree for folders that
+    /// are simply read-only. Optional so that a listing from a portal that predates a browsable bin
+    /// still decodes, and read as false, which is what it meant.
+    let trashed: Bool?
+
+    var isTrashed: Bool { trashed == true }
 }
 
 struct Admin: Codable, Sendable {

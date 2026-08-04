@@ -168,6 +168,15 @@ orphaned; the first enumeration after this change re-issues them by id, which co
 `My Files` and nothing else. Where the item's parent is not in its identifier, it comes from
 `/api/files/items/:id` — the same lookup that says whether it is in the trash.
 
+The mount itself is the exception, and has to be: `My Files` is listed by the classified tree above
+it, which has no ids at all, so it is addressed by path and by nothing else. An item sitting
+directly in it therefore reports **no** parent rather than the root row's id. The row is real — it
+is what everything below hangs off in the table — but naming it would hang the item off an
+identifier no listing ever vends, and the system would go looking for a folder it had never seen.
+`/api/files/items/:id` answers 404 for that row for the same reason, and because it has no name of
+its own to answer with: an item with an empty filename is not an error the file provider framework
+reports but one it aborts on, so nothing may ever be in a position to hand it one.
+
 ### The trash
 
 `My Files` only. `deleted_at` on `admin_files` is the whole mechanism, and it is a flag rather than a
@@ -178,6 +187,15 @@ the bin lists the folder rather than each file that went along inside it.
 
 The namespace index is partial on the flag, so a name in the bin is not a name in use. The cost is
 that putting something back can collide, which is settled by numbering, the way a move already is.
+
+A folder in the bin can be opened, because Finder will try and because what is inside it is still
+there. That is the one read allowed to name something thrown away — `locateQuery` asks for it and
+`locate` does not, so no write can — and a listing of one comes back marked, which is what tells the
+extension that everything in it is to be read or purged and nothing else. Rename and refile the
+portal refuses under a trashed folder; a restore is worse than refused, since the mark it would
+clear is on the folder above, so `.allowsReparenting` stops at the top of what was thrown away.
+Ownership is what authorises any of it, and ownership is unchanged: the bin is a second way into an
+admin's own rows, never into anyone else's.
 
 Trashing keeps the bytes. Only a purge reaches the bucket, and it goes through the same
 `releaseBytes` that asks both tables whether anything still names those bytes.

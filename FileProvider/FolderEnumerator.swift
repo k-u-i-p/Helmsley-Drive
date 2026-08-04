@@ -1,6 +1,18 @@
 import FileProvider
 import Foundation
 
+/// Whether an item may be reported, saying so in the log where it may not.
+///
+/// Handing the framework an item with no name aborts the extension outright — see
+/// `FileProviderItem.isNameable` — and doing it here would take down a whole enumeration and
+/// everything else in flight with it. So a nameless row is left out of the listing rather than
+/// reported, which costs the folder one entry and a line in the log instead of the volume.
+private func nameable(_ item: FileProviderItem, in container: String) -> Bool {
+    guard !item.isNameable else { return true }
+    Log.enumeration.error("an item of \(container, privacy: .public) has no name — left out of the listing")
+    return false
+}
+
 /// Lists one folder of the portal's document tree, and answers what has changed in it since a
 /// given sync anchor.
 ///
@@ -86,20 +98,32 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator {
     private func listing() async throws -> ([NSFileProviderItem], SnapshotStore.Snapshot) {
         let listing = try await api.list(identity.destination)
 
-        let folders = listing.folders.map { FileProviderItem.folder(in: identity, remote: $0) }
-        let files = listing.files.map { FileProviderItem.file(in: identity, remote: $0) }
-        let items: [FileProviderItem] = folders + files
-
-        // Keyed off the items that were just built rather than off identities worked out a second
-        // time: what an identifier is depends on which tree the folder is in, and deriving it twice
-        // is how the two readings come to disagree.
+        // Both built in one pass, and the snapshot keyed off the items that were just built rather
+        // than off identities worked out a second time: what an identifier is depends on which tree
+        // the folder is in, and deriving it twice is how the two readings come to disagree. It also
+        // keeps the two in step where a row is left out, which nothing walking them in parallel
+        // afterwards would.
+        var items: [FileProviderItem] = []
         var snapshot = SnapshotStore.Snapshot()
-        for (item, folder) in zip(folders, listing.folders) {
+
+        // Everything a folder in the bin lists is inside a thrown-away subtree, and what may be done
+        // to it says so. Learned once from the folder that was asked for rather than per row: only
+        // the top of what was thrown away carries the mark, so no row down here shows it.
+        let standing: FileProviderItem.Standing = listing.isTrashed ? .covered : .live
+
+        let container = identity.destination.logDescription
+        for folder in listing.folders {
+            let item = FileProviderItem.folder(in: identity, remote: folder, standing: standing)
+            guard nameable(item, in: container) else { continue }
+            items.append(item)
             // The folder's own version has nothing to do with what is inside it — that is the
             // child's anchor, not this one's — so a rename is the only thing that shows here.
             snapshot[item.itemIdentifier.rawValue] = "\(folder.name)|\(folder.writable)"
         }
-        for (item, file) in zip(files, listing.files) {
+        for file in listing.files {
+            let item = FileProviderItem.file(in: identity, remote: file, standing: standing)
+            guard nameable(item, in: container) else { continue }
+            items.append(item)
             snapshot[item.itemIdentifier.rawValue] = "\(file.version)|\(file.filename)"
         }
 
@@ -174,11 +198,13 @@ final class TrashEnumerator: NSObject, NSFileProviderEnumerator {
     }
 
     private func listing() async throws -> ([NSFileProviderItem], SnapshotStore.Snapshot) {
-        let remote = try await api.trashed()
-        let items = remote.map(FileProviderItem.personal)
-
+        var items: [FileProviderItem] = []
         var snapshot = SnapshotStore.Snapshot()
-        for (item, entry) in zip(items, remote) {
+
+        for entry in try await api.trashed() {
+            let item = FileProviderItem.personal(entry)
+            guard nameable(item, in: "the trash") else { continue }
+            items.append(item)
             snapshot[item.itemIdentifier.rawValue] = "\(entry.version)|\(entry.filename)"
         }
         return (items, snapshot)

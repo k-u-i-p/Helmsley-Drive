@@ -57,17 +57,25 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     /// properties of how its parent lists it, and the portal has no endpoint that describes a filter
     /// in isolation. So it is found by listing the folder above it, which is a request the system has
     /// almost always just made anyway.
+    ///
+    /// One thing is checked rather than passed on: an item with no name aborts the process the
+    /// moment the framework sees it, so what the server said is refused here instead of crashing the
+    /// extension in the caller's own completion handler. `.noSuchItem` because that is what it is —
+    /// a filesystem has no way to show something it cannot name — and because it is the answer that
+    /// makes the system drop one it is already holding rather than ask for it again forever.
     private func item(for identity: ItemIdentity) async throws -> NSFileProviderItem {
+        let item: FileProviderItem
+
         switch identity {
         case .root:
-            return FileProviderItem.root
+            item = FileProviderItem.root
 
         case .personal(let id):
-            return FileProviderItem.personal(try await api.item(id: id))
+            item = FileProviderItem.personal(try await api.item(id: id))
 
         case .file(let path, let documentID):
             let remote = try await api.document(id: documentID)
-            return FileProviderItem.file(in: container(of: path), remote: remote)
+            item = FileProviderItem.file(in: container(of: path), remote: remote)
 
         case .folder(let path):
             guard let segment = path.last else { return FileProviderItem.root }
@@ -76,8 +84,14 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             guard let remote = parent.folders.first(where: { $0.segment == segment }) else {
                 throw NSFileProviderError(.noSuchItem)
             }
-            return FileProviderItem.folder(in: above, remote: remote)
+            item = FileProviderItem.folder(in: above, remote: remote)
         }
+
+        guard item.isNameable else {
+            Log.provider.error("\(identity.destination.logDescription, privacy: .public) has no name — refused rather than handed over")
+            throw NSFileProviderError(.noSuchItem)
+        }
+        return item
     }
 
     /// The folder a path names, as an identity. Only ever used for the classified tree, whose
