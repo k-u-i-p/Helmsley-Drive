@@ -124,7 +124,7 @@ sits in exactly one directory because someone put it there.
 | Browse | yes | yes |
 | Open, preview, Quick Look, copy out | yes — downloaded on first open, evictable afterwards | yes |
 | Drop a file in | where the folder accepts uploads — filed via the portal's own ticket → bucket → finalise path | anywhere in it |
-| Delete | yes — the row and its bytes, exactly as the dashboard's delete does | yes — a folder takes its subtree with it |
+| Delete | **final** — the row and its bytes, exactly as the dashboard's delete does | to the trash, and back out again |
 | New folder | **no** — refused with an explanation | yes |
 | Rename, move | **no** — refused with an explanation | yes |
 | Save changes back | **no** — refused with an explanation | **no** — refused with an explanation |
@@ -146,12 +146,51 @@ dashboard would not have. Which folders can be *restructured* is not a flag on a
 mount has one fixed segment (`My Files`, stable while the folder is labelled with the admin's name),
 and `ItemIdentity` decides from the path alone, before Finder is offered the operation.
 
-### Item identifiers are opaque
+### Item identifiers are opaque, and two shapes
 
 Two tables hang off one volume — `documents` and the admin's own files — and their ids are serials
 from separate sequences, so the server marks which one an id came from and hands over the whole
 thing as a string. Nothing in this app parses one. Reading an id as a number would silently drop the
 mark and fail to decode every personal item outright.
+
+What an identifier is made of differs between the halves, and has to:
+
+- **The classified tree** identifies a document by *the folder it was seen in plus its id*, because a
+  document genuinely is a different item in each folder that lists it — it has no path of its own,
+  and a filesystem insisting on one parent has to pick. Folders there are identified by path, since
+  a folder is a filter the directory spec defines and has no identity apart from where it sits.
+- **My Files** identifies everything by the row id alone. A path would be the wrong thing: rows there
+  move, and go into the bin and come back, and if the path were part of the identifier every one of
+  those would change what the system thinks the item *is*.
+
+`ItemIdentity` still decodes the path-based form for personal items, so nothing already synced is
+orphaned; the first enumeration after this change re-issues them by id, which costs one re-sync of
+`My Files` and nothing else. Where the item's parent is not in its identifier, it comes from
+`/api/files/items/:id` — the same lookup that says whether it is in the trash.
+
+### The trash
+
+`My Files` only. `deleted_at` on `admin_files` is the whole mechanism, and it is a flag rather than a
+move: the row keeps the parent it always had, so putting it back is clearing the flag, and a folder
+comes back with its subtree intact. Only the top of what was thrown away is marked — everything
+under it is already unreachable, because walking requires every hop to be live — which is also why
+the bin lists the folder rather than each file that went along inside it.
+
+The namespace index is partial on the flag, so a name in the bin is not a name in use. The cost is
+that putting something back can collide, which is settled by numbering, the way a move already is.
+
+Trashing keeps the bytes. Only a purge reaches the bucket, and it goes through the same
+`releaseBytes` that asks both tables whether anything still names those bytes.
+
+The framework has no separate verb for any of this: an item is trashed by being reparented into
+`.trashContainer` and put back by being reparented out, and `isTrashed` is iOS-only, so hanging
+under that container is the entire signal.
+
+Documents are deliberately excluded. A row there has no path to be put back along; its content hash
+is unique table-wide, so a trashed one would go on forbidding a re-upload of a file nobody can see;
+and every listing in the portal — `visibilityClause`, the compiler, badge counts, search, the
+dashboard's own `/browse` — would need the filter, with a missed one leaving a deleted document
+visible. That is a portal-wide decision, not a file-provider feature.
 
 ## Changes to the portal
 
@@ -163,8 +202,9 @@ All in `../Helmsley`:
 | `backend/utils/http/bearerAdmin.js` | **new** — authenticates a request by OAuth access token instead of by session cookie |
 | `backend/utils/domain/documents/deleteDocument.js` | **new** — the delete (row + bytes), extracted so Finder and the dashboard cannot come to disagree about it |
 | `backend/routes/admin/documents.js` | delete now calls the above |
-| `backend/utils/domain/adminFiles/adminFileTree.js` | **new** — My Files, walked and listed: the mount the classified tree hands off to |
-| `backend/utils/domain/adminFiles/adminFileWrites.js` | **new** — everything that changes it: new folder, rename, move, delete, finalise |
+| `backend/utils/domain/adminFiles/adminFileTree.js` | **new** — My Files, walked and listed: the mount the classified tree hands off to. Reads exclude trashed rows; `folderById`/`itemById` address one by id, `listTrash` answers the bin |
+| `backend/utils/domain/adminFiles/adminFileWrites.js` | **new** — everything that changes it: new folder, rename, move, trash, restore, purge, finalise |
+| `backend/routes/admin/myFiles.js` | the dashboard's delete now trashes, and gains trash/restore/purge — the two surfaces sit over one table and a delete has to mean one thing across both |
 | `backend/utils/domain/documents/stagedUpload.js` | **new** — the bucket half of an upload, which was the same for both trees all along |
 | `backend/utils/domain/documents/directoryStructure.js` | the `My Files` mount node |
 | `backend/utils/domain/documents/directoryCompiler.js` | admin file listings also carry `file_mime`, `byte_size`, `content_hash`; a `mount` node hands its subtree over whole |

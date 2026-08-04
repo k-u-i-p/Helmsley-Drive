@@ -30,14 +30,14 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator {
             do {
                 let (items, snapshot) = try await listing()
                 await SnapshotStore.shared.store(snapshot, for: identity.identifier)
-                Log.enumeration.info("listed \(self.identity.path.logPath, privacy: .public) — \(items.count, privacy: .public) items")
+                Log.enumeration.info("listed \(self.identity.destination.logDescription, privacy: .public) — \(items.count, privacy: .public) items")
                 observer.didEnumerate(items)
                 // No paging: `/api/files/list` answers a whole folder in one query, ordered by the
                 // same index the dashboard uses. A folder large enough to need pages would need the
                 // server to offer it first.
                 observer.finishEnumerating(upTo: nil)
             } catch {
-                Log.enumeration.error("listing \(self.identity.path.logPath, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                Log.enumeration.error("listing \(self.identity.destination.logDescription, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 observer.finishEnumeratingWithError(FileProviderError.translate(error))
             }
         }
@@ -60,12 +60,12 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator {
 
                 await SnapshotStore.shared.store(snapshot, for: identity.identifier)
 
-                Log.enumeration.info("changes in \(self.identity.path.logPath, privacy: .public) — \(changed.count, privacy: .public) updated, \(deleted.count, privacy: .public) deleted")
+                Log.enumeration.info("changes in \(self.identity.destination.logDescription, privacy: .public) — \(changed.count, privacy: .public) updated, \(deleted.count, privacy: .public) deleted")
                 if !deleted.isEmpty { observer.didDeleteItems(withIdentifiers: deleted) }
                 if !changed.isEmpty { observer.didUpdate(changed) }
                 observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(SnapshotStore.signature(of: snapshot)), moreComing: false)
             } catch {
-                Log.enumeration.error("changes in \(self.identity.path.logPath, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                Log.enumeration.error("changes in \(self.identity.destination.logDescription, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 observer.finishEnumeratingWithError(FileProviderError.translate(error))
             }
         }
@@ -84,24 +84,103 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator {
     /// from. Both come out of one request, so the anchor an enumeration finishes with always
     /// describes exactly the items it just reported.
     private func listing() async throws -> ([NSFileProviderItem], SnapshotStore.Snapshot) {
-        let path = identity.path
-        let listing = try await api.list(path: path)
+        let listing = try await api.list(identity.destination)
 
-        let folders = listing.folders.map { FileProviderItem.folder(path: path + [$0.segment], remote: $0) }
-        let files = listing.files.map { FileProviderItem.file(path: path, remote: $0) }
+        let folders = listing.folders.map { FileProviderItem.folder(in: identity, remote: $0) }
+        let files = listing.files.map { FileProviderItem.file(in: identity, remote: $0) }
         let items: [FileProviderItem] = folders + files
 
+        // Keyed off the items that were just built rather than off identities worked out a second
+        // time: what an identifier is depends on which tree the folder is in, and deriving it twice
+        // is how the two readings come to disagree.
         var snapshot = SnapshotStore.Snapshot()
-        for folder in listing.folders {
-            let identifier = ItemIdentity.folder(path: path + [folder.segment]).identifier
+        for (item, folder) in zip(folders, listing.folders) {
             // The folder's own version has nothing to do with what is inside it — that is the
             // child's anchor, not this one's — so a rename is the only thing that shows here.
-            snapshot[identifier.rawValue] = "\(folder.name)|\(folder.writable)"
+            snapshot[item.itemIdentifier.rawValue] = "\(folder.name)|\(folder.writable)"
         }
-        for file in listing.files {
-            snapshot[ItemIdentity.file(path: path, documentID: file.id).identifier.rawValue] = "\(file.version)|\(file.filename)"
+        for (item, file) in zip(files, listing.files) {
+            snapshot[item.itemIdentifier.rawValue] = "\(file.version)|\(file.filename)"
         }
 
+        return (items, snapshot)
+    }
+}
+
+/// What has been thrown away out of the admin's own folder.
+///
+/// One container for the whole volume, which is what the framework offers and what the portal has:
+/// a trashed row keeps the folder it was in, so nothing needs a bin per directory to know where a
+/// thing came from. The classified tree contributes nothing — a document has no path to be put back
+/// along, and deleting one is final there as it is in the dashboard.
+///
+/// What is listed is the top of each thing thrown away. A directory takes its contents with it, so
+/// the bin offers the directory; the files inside it are still in the table, still under it, and
+/// come back with it.
+///
+/// The same listing-and-diffing as a folder, for the same reason: the portal has no change feed, so
+/// what has left the bin — put back, or purged — is only visible by comparing against what it held
+/// last time.
+final class TrashEnumerator: NSObject, NSFileProviderEnumerator {
+
+    private let api = HelmsleyAPI.shared
+
+    func invalidate() {}
+
+    func enumerateItems(for observer: NSFileProviderEnumerationObserver, startingAt page: NSFileProviderPage) {
+        Task {
+            do {
+                let (items, snapshot) = try await listing()
+                await SnapshotStore.shared.store(snapshot, for: .trashContainer)
+                Log.enumeration.info("trash — \(items.count, privacy: .public) items")
+                observer.didEnumerate(items)
+                observer.finishEnumerating(upTo: nil)
+            } catch {
+                Log.enumeration.error("listing the trash failed: \(error.localizedDescription, privacy: .public)")
+                observer.finishEnumeratingWithError(FileProviderError.translate(error))
+            }
+        }
+    }
+
+    func enumerateChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
+        Task {
+            do {
+                let (items, snapshot) = try await listing()
+                let previous = await SnapshotStore.shared.snapshot(for: .trashContainer)
+
+                let changed = items.filter { previous[$0.itemIdentifier.rawValue] != snapshot[$0.itemIdentifier.rawValue] }
+                let deleted = previous.keys
+                    .filter { snapshot[$0] == nil }
+                    .map(NSFileProviderItemIdentifier.init(_:))
+
+                await SnapshotStore.shared.store(snapshot, for: .trashContainer)
+
+                Log.enumeration.info("trash — \(changed.count, privacy: .public) updated, \(deleted.count, privacy: .public) gone")
+                if !deleted.isEmpty { observer.didDeleteItems(withIdentifiers: deleted) }
+                if !changed.isEmpty { observer.didUpdate(changed) }
+                observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(SnapshotStore.signature(of: snapshot)), moreComing: false)
+            } catch {
+                Log.enumeration.error("changes in the trash failed: \(error.localizedDescription, privacy: .public)")
+                observer.finishEnumeratingWithError(FileProviderError.translate(error))
+            }
+        }
+    }
+
+    func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
+        Task {
+            let snapshot = await SnapshotStore.shared.snapshot(for: .trashContainer)
+            completionHandler(NSFileProviderSyncAnchor(SnapshotStore.signature(of: snapshot)))
+        }
+    }
+
+    private func listing() async throws -> ([NSFileProviderItem], SnapshotStore.Snapshot) {
+        let remote = try await api.trashed()
+        let items = remote.map(FileProviderItem.personal)
+
+        var snapshot = SnapshotStore.Snapshot()
+        for (item, entry) in zip(items, remote) {
+            snapshot[item.itemIdentifier.rawValue] = "\(entry.version)|\(entry.filename)"
+        }
         return (items, snapshot)
     }
 }

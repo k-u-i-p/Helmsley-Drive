@@ -18,6 +18,17 @@ struct RemoteFile: Codable, Sendable, Equatable {
     let size: Int64?
     let version: String
     let uploadDate: String?
+
+    // The three the admin's own tree answers and a document never does — a document has no parent to
+    // report, appearing as it does in every folder whose filter matches it, and it is never a folder
+    // and never in a bin. Optional so that a listing from a portal that predates the trash still
+    // decodes; `isFolder` and `isTrashed` read a missing value as false, which is what it meant.
+    let parent: String?
+    let isDir: Bool?
+    let trashed: Bool?
+
+    var isFolder: Bool { isDir == true }
+    var isTrashed: Bool { trashed == true }
 }
 
 /// One subfolder. `segment` is what goes back in a path; `name` is what a person reads. They differ
@@ -27,6 +38,11 @@ struct RemoteFolder: Codable, Sendable, Equatable {
     let segment: String
     let name: String
     let writable: Bool
+
+    /// Null outside the admin's own tree, whose folders are rows and so have an identity apart from
+    /// where they sit. Carried by the server rather than spelled from the segment: how an id marks
+    /// which table it came from is not something this app should have to know.
+    let id: String?
 }
 
 struct Listing: Codable, Sendable {
@@ -81,12 +97,31 @@ struct HelmsleyAPI: Sendable {
 
     // MARK: Reads
 
-    func list(path: [String]) async throws -> Listing {
+    /// One directory, named either by the path the classified tree is addressed by or by the id of a
+    /// folder in the admin's own.
+    ///
+    /// Repeated `path`, in order — the same shape the dashboard's own /browse takes, and the reason
+    /// a segment may safely contain a slash or a space.
+    func list(_ destination: Destination) async throws -> Listing {
         var components = URLComponents(url: base.appendingPathComponent("list"), resolvingAgainstBaseURL: false)!
-        // Repeated `path`, in order — the same shape the dashboard's own /browse takes, and the
-        // reason a segment may safely contain a slash or a space.
-        components.queryItems = path.map { URLQueryItem(name: "path", value: $0) }
+        components.queryItems = destination.query
         return try await get(components.url!)
+    }
+
+    /// One item of the admin's own tree, which is the only lookup that answers for a directory and
+    /// the only one that says where the item sits and whether it is in the bin.
+    func item(id: String) async throws -> RemoteFile {
+        struct Wrapper: Decodable { let item: RemoteFile }
+        let wrapper: Wrapper = try await get(itemURL(id))
+        return wrapper.item
+    }
+
+    /// What the bin holds — the top of each thing thrown away, not everything marked: a directory
+    /// takes its contents with it, and the trash shows the directory rather than each file inside.
+    func trashed() async throws -> [RemoteFile] {
+        struct Wrapper: Decodable { let items: [RemoteFile] }
+        let wrapper: Wrapper = try await get(base.appendingPathComponent("trash"))
+        return wrapper.items
     }
 
     func document(id: String) async throws -> RemoteFile {
@@ -132,7 +167,7 @@ struct HelmsleyAPI: Sendable {
     ///
     /// The bytes never pass through the portal — App Engine caps a request at 32MB — so the middle
     /// step talks to a completely different host, using a URL signed for exactly this one object.
-    func upload(path: [String], filename: String, mime: String?, fileURL: URL, reporting parent: Progress? = nil) async throws -> RemoteFile {
+    func upload(to destination: Destination, filename: String, mime: String?, fileURL: URL, reporting parent: Progress? = nil) async throws -> RemoteFile {
         struct Ticket: Decodable {
             let uploadId: String
             let uploadUrl: String
@@ -144,7 +179,7 @@ struct HelmsleyAPI: Sendable {
         // and falls back to octet-stream, which is a different thing from the key being absent.
         let ticket: Ticket = try await post(
             base.appendingPathComponent("upload-ticket"),
-            body: ["path": path, "contentType": mime ?? NSNull()]
+            body: destination.body.merging(["contentType": mime ?? NSNull()]) { current, _ in current }
         )
 
         var put = URLRequest(url: URL(string: ticket.uploadUrl)!)
@@ -163,7 +198,7 @@ struct HelmsleyAPI: Sendable {
         struct Wrapper: Decodable { let file: RemoteFile }
         let wrapper: Wrapper = try await post(
             base.appendingPathComponent("finalise"),
-            body: ["path": path, "uploadId": ticket.uploadId, "filename": filename]
+            body: destination.body.merging(["uploadId": ticket.uploadId, "filename": filename]) { current, _ in current }
         )
         return wrapper.file
     }
@@ -185,11 +220,11 @@ struct HelmsleyAPI: Sendable {
     ///
     /// A name already in use is numbered rather than refused — which is what a filesystem does — so
     /// the folder to show is the one that comes back, not the one that was asked for.
-    func createFolder(path: [String], name: String) async throws -> RemoteFolder {
+    func createFolder(in destination: Destination, name: String) async throws -> RemoteFolder {
         struct Wrapper: Decodable { let folder: RemoteFolder }
         let wrapper: Wrapper = try await post(
             base.appendingPathComponent("folders"),
-            body: ["path": path, "name": name]
+            body: destination.body.merging(["name": name]) { current, _ in current }
         )
         return wrapper.folder
     }
@@ -208,9 +243,25 @@ struct HelmsleyAPI: Sendable {
     /// Moves one item into the folder at `path`, and answers the name it landed under — which is not
     /// always the name it left with, since a collision in the target is numbered rather than refused.
     @discardableResult
-    func move(id: String, to path: [String]) async throws -> String {
+    func move(id: String, to destination: Destination) async throws -> String {
         struct Wrapper: Decodable { let name: String }
-        let wrapper: Wrapper = try await post(itemURL(id, "move"), body: ["path": path])
+        let wrapper: Wrapper = try await post(itemURL(id, "move"), body: destination.body)
+        return wrapper.name
+    }
+
+    /// Into the bin. The bytes stay and the row keeps the folder it was in, which is what makes
+    /// putting it back a matter of undoing this rather than of remembering where it came from.
+    func trash(id: String) async throws {
+        _ = try await post(itemURL(id, "trash"), body: [:]) as Empty
+    }
+
+    /// Out again — into `destination` where one is named, which is what Put Back supplies, and back
+    /// where it was otherwise. The name may come back numbered: while the row sat in the bin its
+    /// name was not in use, so something else may have taken it in the meantime.
+    @discardableResult
+    func restore(id: String, to destination: Destination?) async throws -> String {
+        struct Wrapper: Decodable { let name: String }
+        let wrapper: Wrapper = try await post(itemURL(id, "restore"), body: destination?.body ?? [:])
         return wrapper.name
     }
 
@@ -224,8 +275,12 @@ struct HelmsleyAPI: Sendable {
         base.appendingPathComponent("documents").appendingPathComponent(id)
     }
 
+    private func itemURL(_ id: String) -> URL {
+        base.appendingPathComponent("items").appendingPathComponent(id)
+    }
+
     private func itemURL(_ id: String, _ action: String) -> URL {
-        base.appendingPathComponent("items").appendingPathComponent(id).appendingPathComponent(action)
+        itemURL(id).appendingPathComponent(action)
     }
 
     private func get<T: Decodable>(_ url: URL) async throws -> T {
