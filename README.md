@@ -558,8 +558,12 @@ another sign-in, exactly as **Mount in Finder** does on the Mac.
 Start here — the extension logs every failure, and Finder shows none of them:
 
 ```bash
-log stream --predicate 'subsystem == "uk.co.helmsley.HelmsleyDrive"' --info
+/usr/bin/log stream --predicate 'subsystem == "uk.co.helmsley.HelmsleyDrive"' --info
 ```
+
+The full path matters: zsh has a `log` builtin of its own, and it answers every one of these with
+"too many arguments" and nothing to suggest it is not the tool you meant. Swap `stream` for
+`show --last 10m` to read what has already happened rather than waiting for more.
 
 For the system's side of the conversation (it says why it refused something):
 
