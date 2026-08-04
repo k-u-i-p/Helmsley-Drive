@@ -387,6 +387,17 @@ Nothing here is worth alerting on when it fails. A push that does not arrive cos
 freshness for up to fifteen minutes and nothing else, so a refusal is logged (`APNs refused device …`)
 and the send moves on; a device APNs reports as unregistered has its row deleted.
 
+Which is why there is a way to ask on purpose. From the portal checkout:
+
+```bash
+npm run push-test
+```
+
+It sends the real thing to every registered device and prints what APNs said, with the fix beside
+each refusal. A push is outbound only, so this works from a laptop with no public address — and
+since a locally run portal reads the same database the app registered against, the whole path can be
+exercised without deploying anything.
+
 ## Building
 
 Requires Xcode and a signing team. The project is set to team `CR2F6D8AF7`.
