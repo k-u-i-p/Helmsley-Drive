@@ -10,10 +10,9 @@ enum Configuration {
 
     // MARK: - Server
 
-    /// Where the portal lives. Overridable so the extension can be pointed at a local backend
-    /// without a rebuild; the app's Settings pane writes it, and both processes read it out of the
-    /// shared defaults below.
-    static let defaultBaseURL = URL(string: "https://helmsley-clients.co.uk")!
+    /// Where the portal lives. Fixed at build time: a shipped app talks to the portal and nothing
+    /// else, so there is no address for anyone to get wrong.
+    static let baseURL = URL(string: "https://helmsley-clients.co.uk")!
 
     /// The OAuth client this app is registered as, matching `mcp.clients[].clientId` in the
     /// portal's config.json. A public client: it ships to laptops, so it holds no secret, and PKCE
@@ -27,7 +26,7 @@ enum Configuration {
 
     // MARK: - Sharing between the app and the extension
 
-    /// Non-secret settings live here; the group container is the only writable place both
+    /// The enumeration snapshots live here; the group container is the only writable place both
     /// processes can see, since each is sandboxed into a container of its own otherwise.
     static let appGroupIdentifier = "group.uk.co.helmsley.HelmsleyDrive"
 
@@ -98,23 +97,4 @@ enum Configuration {
 
     /// What Finder shows in the sidebar.
     static let domainDisplayName = "Helmsley Documents"
-
-    // MARK: - Shared defaults
-
-    static var sharedDefaults: UserDefaults {
-        UserDefaults(suiteName: appGroupIdentifier) ?? .standard
-    }
-
-    private static let baseURLKey = "baseURL"
-
-    /// The portal origin both processes talk to. Falls back to the production one, so a fresh
-    /// install works before anything has been configured.
-    static var baseURL: URL {
-        get {
-            guard let stored = sharedDefaults.string(forKey: baseURLKey),
-                  let url = URL(string: stored) else { return defaultBaseURL }
-            return url
-        }
-        set { sharedDefaults.set(newValue.absoluteString, forKey: baseURLKey) }
-    }
 }

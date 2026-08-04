@@ -36,9 +36,9 @@ authenticate. See *Changes to the portal* below.
 | `HelmsleyDrive-iOS` | iOS | the same two jobs, in an iOS shape |
 | `HelmsleyFileProvider-iOS` | iOS | the same extension, for the Files app |
 
-An app and its extension are separate processes, sharing three things: the portal address (app group
-defaults), the OAuth token set (keychain access group), and the enumeration snapshots the change
-diff is computed against (app group container).
+An app and its extension are separate processes, sharing two things: the OAuth token set (keychain
+access group), and the enumeration snapshots the change diff is computed against (app group
+container).
 
 The two platforms share everything but their UI. `FileProvider/` — the whole engine — is compiled
 into both extensions unchanged; the platform difference amounts to two `#if os(macOS)` blocks.
@@ -417,9 +417,9 @@ stale one; `pluginkit -m -v -i uk.co.helmsley.HelmsleyDrive.FileProvider` shows 
 
 **Sign Out and Unmount** removes the domain and discards the credential.
 
-The *Server…* button repoints both processes at another portal — a local backend, usually. Changing
-it signs you out, since a token minted by one server means nothing to another. A local backend needs
-`helmsley-drive://oauth/callback` registered in its own `config.json` too.
+The portal address is fixed at build time, in `Configuration.baseURL`. Pointing the apps at a local
+backend is an edit there and a rebuild; that backend needs `helmsley-drive://oauth/callback`
+registered in its own `config.json` too.
 
 The app has to stay installed: an extension is loaded out of its host app's bundle, so deleting the
 app unmounts the volume.

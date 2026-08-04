@@ -17,11 +17,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var isWorking = false
     @Published var errorMessage: String?
 
-    @Published var baseURLText: String = Configuration.baseURL.absoluteString
-    /// Whether the server sheet is open. Here rather than in the view because the field it edits is
-    /// here, and closing it is something `applyBaseURL` decides — a save that fails must leave it up.
-    @Published var isEditingServer = false
-
     private let signIn = SignIn()
 
     var isSignedIn: Bool { admin != nil }
@@ -54,7 +49,6 @@ final class AppModel: ObservableObject {
 
     func connect() async {
         await perform {
-            try await self.applyBaseURL()
             let tokens = try await self.signIn.run()
             try await TokenProvider.shared.store(tokens)
 
@@ -88,35 +82,6 @@ final class AppModel: ObservableObject {
             await TokenProvider.shared.signOut()
             self.admin = nil
         }
-    }
-
-    /// Closes the server sheet only if the address was accepted, so a typo leaves it open with the
-    /// reason showing rather than dismissing and quietly keeping the old one.
-    func saveBaseURL() async {
-        do {
-            try await applyBaseURL()
-            isEditingServer = false
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    /// Points both processes at a different portal — a local backend, usually. Signing out first
-    /// because a token minted by one server means nothing to another.
-    func applyBaseURL() async throws {
-        guard let url = URL(string: baseURLText.trimmingCharacters(in: .whitespaces)),
-              url.scheme != nil, url.host != nil else {
-            throw AppError.badBaseURL
-        }
-        guard url != Configuration.baseURL else { return }
-
-        if await TokenProvider.shared.isSignedIn {
-            await TokenProvider.shared.signOut()
-            admin = nil
-        }
-        Configuration.baseURL = url
-        baseURLText = url.absoluteString
     }
 
     private func perform(_ work: @escaping () async throws -> Void) async {
@@ -155,15 +120,5 @@ final class AppModel: ObservableObject {
     private static func removeDomain() async throws {
         guard await domainExists() else { return }
         try await NSFileProviderManager.remove(domain)
-    }
-}
-
-enum AppError: LocalizedError {
-    case badBaseURL
-
-    var errorDescription: String? {
-        switch self {
-        case .badBaseURL: return "That is not a valid portal address. It should look like https://helmsley-clients.co.uk."
-        }
     }
 }

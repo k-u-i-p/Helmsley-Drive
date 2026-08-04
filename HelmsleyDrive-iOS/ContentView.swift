@@ -14,14 +14,7 @@ struct ContentView: View {
             }
             .listStyle(.insetGrouped)
             .navigationTitle("Helmsley Drive")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Server") { model.isEditingServer = true }
-                        .disabled(model.isWorking)
-                }
-            }
             .task { await model.refresh() }
-            .sheet(isPresented: $model.isEditingServer) { serverSheet }
         }
     }
 
@@ -120,38 +113,6 @@ struct ContentView: View {
                 Text(message).font(.callout)
             } icon: {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-            }
-        }
-    }
-
-    // MARK: - Server
-
-    private var serverSheet: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("https://helmsley-clients.co.uk", text: $model.baseURLText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                } header: {
-                    Text("Portal address")
-                } footer: {
-                    Text("Changing this signs you out — an access token issued by one server means nothing to another.")
-                }
-            }
-            .navigationTitle("Server")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        model.baseURLText = Configuration.baseURL.absoluteString
-                        model.isEditingServer = false
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { Task { await model.saveBaseURL() } }
-                }
             }
         }
     }

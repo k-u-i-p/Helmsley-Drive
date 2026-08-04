@@ -30,7 +30,6 @@ struct ContentView: View {
         .padding(24)
         .frame(width: 460, height: 340)
         .task { await model.refresh() }
-        .sheet(isPresented: $model.isEditingServer) { settings }
     }
 
     private var header: some View {
@@ -115,36 +114,6 @@ struct ContentView: View {
         HStack {
             if model.isWorking { ProgressView().controlSize(.small) }
             Spacer()
-            Button("Server…") { model.isEditingServer = true }
-                .buttonStyle(.link)
-                .disabled(model.isWorking)
         }
-    }
-
-    private var settings: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Portal address").font(.headline)
-            Text("Changing this signs you out — an access token issued by one server means nothing to another.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            TextField("https://helmsley-clients.co.uk", text: $model.baseURLText)
-                .textFieldStyle(.roundedBorder)
-
-            HStack {
-                Spacer()
-                Button("Cancel") {
-                    model.baseURLText = Configuration.baseURL.absoluteString
-                    model.isEditingServer = false
-                }
-                Button("Save") {
-                    Task { await model.saveBaseURL() }
-                }
-                .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(20)
-        .frame(width: 420)
     }
 }
