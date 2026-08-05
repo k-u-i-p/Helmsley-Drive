@@ -17,9 +17,9 @@ enum Timestamp {
         return fractional.date(from: value) ?? whole.date(from: value)
     }
 
-    // Two, because `ISO8601DateFormatter` matches fractional seconds only when told to and Postgres
-    // omits them on a whole second. Static because this runs for every row of every listing, and the
-    // formatter — unlike `DateFormatter` — is documented as safe to share.
+    // Two, because `ISO8601DateFormatter` matches fractional seconds only when told to, and an
+    // instant on a whole second may be spelled without them. Static because this runs for every row
+    // of every listing, and the formatter — unlike `DateFormatter` — is documented as safe to share.
     private static let fractional: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -230,39 +230,26 @@ struct HelmsleyAPI: Sendable {
         request.setValue("Bearer \(try await TokenProvider.shared.accessToken())", forHTTPHeaderField: "Authorization")
 
         let (url, response) = try await Transport.download(request, reporting: parent)
-        guard let http = response as? HTTPURLResponse else {
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else {
+            // The temporary file is the caller's only on success — a refusal holds the portal's
+            // error page, which nothing wants and nobody would delete.
             try? FileManager.default.removeItem(at: url)
-            throw APIError.malformedResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            try? FileManager.default.removeItem(at: url)
-            throw APIError.http(status: http.statusCode, message: "Could not download file \(id).")
+            throw APIError.http(status: status, message: "Could not download file \(id).")
         }
         return url
     }
 
     // MARK: Writes
 
-    /// Files a new file into `destination`, in the three steps the portal's upload has always taken:
-    /// a ticket, a PUT straight to Cloud Storage, then a finalise that writes the row.
-    ///
-    /// The bytes never pass through the portal — App Engine caps a request at 32MB — so the middle
-    /// step talks to a completely different host, using a URL signed for exactly this one object.
+    /// Files a new file into `destination`: a ticket for the folder it is landing in, the bytes, and
+    /// a finalise that writes the row.
     func upload(to destination: Destination, filename: String, mime: String?, fileURL: URL, reporting parent: Progress? = nil) async throws -> RemoteFile {
-        // NSNull, not a missing key: the server reads null as "this drop declares no content type"
-        // and falls back to octet-stream, which is a different thing from the key being absent.
-        let ticket: Ticket = try await post(
-            base.appendingPathComponent("upload-ticket"),
-            body: destination.body(with: ["contentType": mime ?? NSNull()])
+        let uploadId = try await stage(destination.body(), mime: mime, fromFile: fileURL, reporting: parent)
+        return try await row(
+            at: base.appendingPathComponent("finalise"),
+            body: destination.body(with: ["uploadId": uploadId, "filename": filename])
         )
-        try await send(ticket, fromFile: fileURL, reporting: parent)
-
-        struct Wrapper: Decodable { let file: RemoteFile }
-        let wrapper: Wrapper = try await post(
-            base.appendingPathComponent("finalise"),
-            body: destination.body(with: ["uploadId": ticket.uploadId, "filename": filename])
-        )
-        return wrapper.file
     }
 
     /// Replaces one file's bytes under the same row — a save in the volume rather than a drop into
@@ -274,18 +261,8 @@ struct HelmsleyAPI: Sendable {
     /// keeps its id, so nothing the system is holding stops resolving; what changes is its content
     /// hash, which is its version, and its `updated_at`, which is its Date Modified.
     func replaceContents(id: String, mime: String?, fileURL: URL, reporting parent: Progress? = nil) async throws -> RemoteFile {
-        let ticket: Ticket = try await post(
-            base.appendingPathComponent("upload-ticket"),
-            body: ["replaces": id, "contentType": mime ?? NSNull()]
-        )
-        try await send(ticket, fromFile: fileURL, reporting: parent)
-
-        struct Wrapper: Decodable { let file: RemoteFile }
-        let wrapper: Wrapper = try await post(
-            documentURL(id).appendingPathComponent("content"),
-            body: ["uploadId": ticket.uploadId]
-        )
-        return wrapper.file
+        let uploadId = try await stage(["replaces": id], mime: mime, fromFile: fileURL, reporting: parent)
+        return try await row(at: documentURL(id).appendingPathComponent("content"), body: ["uploadId": uploadId])
     }
 
     /// What the portal answers a request for somewhere to put bytes with.
@@ -296,8 +273,19 @@ struct HelmsleyAPI: Sendable {
         let maxBytes: Int64
     }
 
-    /// The middle step of both: the bytes, straight to Cloud Storage.
-    private func send(_ ticket: Ticket, fromFile fileURL: URL, reporting parent: Progress?) async throws {
+    /// The first two steps of a drop and of a save alike: ask where the bytes go, then put them
+    /// there. `target` is what the ticket is for — the folder a drop lands in, or the file a save
+    /// replaces — and is what the portal checks before a byte moves.
+    ///
+    /// The bytes never pass through the portal — App Engine caps a request at 32MB — so the second
+    /// step talks to a completely different host, using a URL signed for exactly this one object.
+    private func stage(_ target: [String: Any], mime: String?, fromFile fileURL: URL, reporting parent: Progress?) async throws -> String {
+        // Null rather than a missing key, so the body says outright that this transfer declares no
+        // content type. Either way the portal falls back to octet-stream.
+        var ask = target
+        ask["contentType"] = mime ?? NSNull()
+        let ticket: Ticket = try await post(base.appendingPathComponent("upload-ticket"), body: ask)
+
         var put = URLRequest(url: URL(string: ticket.uploadUrl)!)
         put.httpMethod = "PUT"
         // Both headers were signed into the URL, so they must be sent back exactly: Cloud Storage
@@ -310,6 +298,15 @@ struct HelmsleyAPI: Sendable {
         let (_, response) = try await Transport.upload(put, fromFile: fileURL, reporting: parent)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else { throw APIError.uploadRejected(status: status) }
+        return ticket.uploadId
+    }
+
+    /// The last step of both, which answers with the row the bytes landed on — read back after the
+    /// write, so it describes the file as it now stands rather than as the request left it.
+    private func row(at url: URL, body: [String: Any]) async throws -> RemoteFile {
+        struct Wrapper: Decodable { let file: RemoteFile }
+        let wrapper: Wrapper = try await post(url, body: body)
+        return wrapper.file
     }
 
     func delete(id: String) async throws {
@@ -344,18 +341,16 @@ struct HelmsleyAPI: Sendable {
     /// name they mean, and quietly making it "Report 2" would hide that "Report" is already there.
     @discardableResult
     func rename(id: String, to name: String) async throws -> String {
-        struct Wrapper: Decodable { let name: String }
-        let wrapper: Wrapper = try await post(itemURL(id, "rename"), body: ["name": name])
-        return wrapper.name
+        let renamed: Named = try await post(itemURL(id, "rename"), body: ["name": name])
+        return renamed.name
     }
 
     /// Moves one item into `destination`, and answers the name it landed under — which is not always
     /// the name it left with, since a collision in the target is numbered rather than refused.
     @discardableResult
     func move(id: String, to destination: Destination) async throws -> String {
-        struct Wrapper: Decodable { let name: String }
-        let wrapper: Wrapper = try await post(itemURL(id, "move"), body: destination.body())
-        return wrapper.name
+        let moved: Named = try await post(itemURL(id, "move"), body: destination.body())
+        return moved.name
     }
 
     /// Into the bin. The bytes stay and the row keeps the folder it was in, which is what makes
@@ -369,9 +364,8 @@ struct HelmsleyAPI: Sendable {
     /// in the bin its name was not in use, so something else may have taken it in the meantime.
     @discardableResult
     func restore(id: String, to destination: Destination?) async throws -> String {
-        struct Wrapper: Decodable { let name: String }
-        let wrapper: Wrapper = try await post(itemURL(id, "restore"), body: destination?.body() ?? [:])
-        return wrapper.name
+        let restored: Named = try await post(itemURL(id, "restore"), body: destination?.body() ?? [:])
+        return restored.name
     }
 
     // MARK: Push
@@ -410,6 +404,10 @@ struct HelmsleyAPI: Sendable {
     // MARK: Plumbing
 
     private struct Empty: Decodable {}
+
+    /// What a rename, a move and a restore all answer with: the name the item ended up under, which
+    /// is not always the one that was asked for.
+    private struct Named: Decodable { let name: String }
 
     // Both take the id as a path component rather than interpolating it into one. An identifier is
     // whatever the server chose to make it, so it is escaped rather than trusted to be URL-safe.

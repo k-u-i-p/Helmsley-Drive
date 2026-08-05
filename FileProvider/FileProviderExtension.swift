@@ -61,22 +61,23 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     /// Everything below the mount point answers directly, folder or file, in the bin or not: it is a
     /// row with an id, and `/items/:id` says what it is, where it sits, and what may be done to it.
     /// One request, whatever was asked for — which is the whole of what one tree bought.
-    ///
-    /// A nameless row is refused here rather than passed on, since handing one over aborts the
-    /// process (`FileProviderItem.isNameable`). `.noSuchItem` because that is what it is, and
-    /// because it makes the system drop the item rather than ask for it again forever.
     private func item(for identity: ItemIdentity) async throws -> NSFileProviderItem {
-        let item: FileProviderItem
-
         switch identity {
         case .root:
-            item = FileProviderItem.root
+            return try reportable(.root)
         case .node(let id):
-            item = FileProviderItem.item(try await api.item(id: id), as: identity)
+            return try reportable(FileProviderItem.item(try await api.item(id: id), as: identity))
         }
+    }
 
+    /// The one check every item passes before it is handed to the system.
+    ///
+    /// A nameless row is refused rather than passed on, since handing one over aborts the process
+    /// (`FileProviderItem.isNameable`). `.noSuchItem` because that is what it is, and because it
+    /// makes the system drop the item rather than ask for it again forever.
+    private func reportable(_ item: FileProviderItem) throws -> FileProviderItem {
         guard item.isNameable else {
-            Log.provider.error("\(identity.logDescription, privacy: .public) has no name — refused rather than handed over")
+            Log.provider.error("\(item.itemIdentifier.rawValue, privacy: .public) has no name — refused rather than handed over")
             throw NSFileProviderError(.noSuchItem)
         }
         return item
@@ -170,11 +171,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 // The row is new and in a folder that just took it, so everything is open to it —
                 // which is what the server answers, and what is assumed of a portal that does not.
                 completionHandler(
-                    FileProviderItem.file(
+                    try self.reportable(FileProviderItem.file(
                         in: parent,
                         remote: remote,
                         permissions: remote.permissions ?? Permissions(assumedFrom: true)
-                    ),
+                    )),
                     [], false, nil
                 )
             } catch {
@@ -206,11 +207,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 // fill and throw away, which is what the server says of one and what is assumed of
                 // a portal that does not say.
                 completionHandler(
-                    FileProviderItem.folder(
+                    try self.reportable(FileProviderItem.folder(
                         in: parent,
                         remote: remote,
                         permissions: remote.permissions ?? Permissions(assumedFrom: true)
-                    ),
+                    )),
                     [], false, nil
                 )
             } catch {
@@ -241,16 +242,21 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         // A save. The framework hands over the whole file rather than a patch, and the portal takes
         // it as a replacement for the row's bytes — so what arrives here is the new contents on
         // disk, and what goes back is the row it landed on.
-        let rewriting = changedFields.contains(.contents)
-        if rewriting && newContents == nil {
-            completionHandler(nil, [], false, FileProviderError.unsupported("A save has to arrive with the file's new contents."))
-            return progress
+        let saving: URL?
+        if changedFields.contains(.contents) {
+            guard let newContents else {
+                completionHandler(nil, [], false, FileProviderError.unsupported("A save has to arrive with the file's new contents."))
+                return progress
+            }
+            saving = newContents
+        } else {
+            saving = nil
         }
 
         // Anything else Finder wants to record — a tag, a last-used date — is local, so it is
         // accepted unchanged. The mount point is not a row and has nothing to change.
         let relocation = changedFields.intersection([.filename, .parentItemIdentifier])
-        guard let itemID = identity.nodeID, rewriting || !relocation.isEmpty else {
+        guard let itemID = identity.nodeID, saving != nil || !relocation.isEmpty else {
             return acknowledge(identity, progress: progress, completionHandler: completionHandler)
         }
 
@@ -258,11 +264,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let work = Task {
             do {
                 if relocation.contains(.parentItemIdentifier) {
-                    // Whether the item is in the bin *now*, asked of the server rather than read off
-                    // the item: the one handed over describes what it should become, so where it is
-                    // leaving from is not in it — and that is what tells a restore from a move.
-                    let wasTrashed = try await api.item(id: itemID).isTrashed
-                    try await self.reparent(itemID, fromTrash: wasTrashed, to: target)
+                    try await self.reparent(itemID, to: target)
                 }
                 // Moved first, then renamed — because the two settle a name clash differently. A
                 // move numbers what it cannot keep, so doing it first parks the item in the target
@@ -277,18 +279,31 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 // — and so the row's Date Modified is the save's, which is the moment the user will
                 // recognise. The type is the item's own: a save cannot rename anything, so it is
                 // the one the name already implied.
-                if rewriting, let contents = newContents {
+                var saved: RemoteFile?
+                if let saving {
                     Log.provider.info("saving \(item.filename, privacy: .public)")
-                    _ = try await api.replaceContents(
+                    saved = try await api.replaceContents(
                         id: itemID,
                         mime: item.contentType?.preferredMIMEType,
-                        fileURL: contents,
+                        fileURL: saving,
                         reporting: progress
                     )
                 }
 
-                let updated = try await self.item(for: identity)
+                // Signalled before the item is worked out, since by here every write this call was
+                // asked for has landed — and the other volumes should hear about them whatever
+                // this one manages to report back.
                 await signal.fire()
+
+                // The row as it now stands. A save answers with it, read back after the write —
+                // and the bytes go last, so that answer already carries any move or rename this
+                // call made. Only a relocation on its own leaves something left to ask for.
+                let updated: NSFileProviderItem
+                if let saved {
+                    updated = try self.reportable(FileProviderItem.item(saved, as: identity))
+                } else {
+                    updated = try await self.item(for: identity)
+                }
                 completionHandler(updated, [], false, nil)
             } catch {
                 Log.provider.error("modifying \(itemID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
@@ -297,7 +312,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             // Only where nothing was transferred. A save hands this progress to the upload, which
             // takes over its units and completes them as the bytes go; counting a second unit on
             // top of that would report a transfer as more than finished.
-            if !rewriting { progress.completedUnitCount = 1 }
+            if saving == nil { progress.completedUnitCount = 1 }
         }
         progress.cancellationHandler = { work.cancel() }
         return progress
@@ -310,11 +325,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     /// `.trashContainer` and expects the item to come back saying it is trashed. Taking it out again
     /// is the same move in reverse — an undo, or a drag out of the bin. Finder's own Put Back never
     /// sends one and cannot be made to; the trash section of the README says why.
-    private func reparent(
-        _ itemID: String,
-        fromTrash: Bool,
-        to target: NSFileProviderItemIdentifier
-    ) async throws {
+    private func reparent(_ itemID: String, to target: NSFileProviderItemIdentifier) async throws {
         if target == .trashContainer {
             return try await api.trash(id: itemID)
         }
@@ -326,7 +337,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         guard let destination = ItemIdentity(target) else {
             throw FileProviderError.unsupported("That is not a folder of the Helmsley tree.")
         }
-        if fromTrash {
+
+        // Whether the item is in the bin *now*, asked of the server rather than read off the item:
+        // the one handed over describes what it should become, so where it is leaving from is not
+        // in it — and that is what tells a restore from a move. Asked only here, since a move
+        // *into* the bin is the same request either way.
+        if try await api.item(id: itemID).isTrashed {
             // Restored and relocated in one step, because that is what dragging something out of the
             // trash is. A restore to where it came from sends the same request naming that folder.
             _ = try await api.restore(id: itemID, to: destination.destination)
