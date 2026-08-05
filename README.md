@@ -89,19 +89,23 @@ make is available everywhere the portal allows it rather than in one branch.
 A file's version is its content hash, which is also its key in the storage bucket. It changes when
 and only when the bytes do, so a downloaded copy stays valid until the file is genuinely replaced.
 
-That is also what settles the dates Finder shows. A file's bytes are written once and never
-rewritten — a re-upload inserts a new row — so `created_at` is both when it was created and when its
-content last changed, and the two dates against a file are one instant. `updated_at` moves on a
-rename, a move and a trip through the bin, which makes it what a *folder* last changed and never a
-file's Date Modified: using it there would tell Finder the contents of a file somebody renamed had
-changed that afternoon. A declared folder has no row and so shows no date, which is the truth.
+That is also what settles the dates Finder shows. `created_at` is when the row was written;
+`updated_at` is when its bytes were last replaced, and a save is the only thing that moves it — not a
+rename, not a move, not a trip through the bin. That is what makes it a Date Modified: using a column
+that a rename moved would tell Finder the contents of a file somebody merely renamed had changed that
+afternoon. The two are one instant against a file nobody has saved over, which is the truth about it.
+
+A folder has no bytes to date, so `updated_at` is the other thing there — when the row itself last
+changed, which is the only "modified" a folder here has. One column, two meanings, decided by whether
+the row is a file: `TOUCH_UNLESS_FILE` in the portal's `fileWrites.js` is where that is enforced, and
+it is the whole of it. A declared folder has no row and so shows no date, which is also the truth.
 
 ### Where the bytes go
 
-Never through the portal. A download is answered with a `302` into Cloud Storage and an upload PUTs
-to a signed URL, so both transfers are between the device and the bucket — App Engine only ever
-carries the redirect, the upload ticket and the finalise. That is not a nicety: App Engine caps a
-request at 32MB against a 500MB file limit, so proxying could not work.
+Never through the portal. A download is answered with a `302` into Cloud Storage and both an upload
+and a save PUT to a signed URL, so every transfer is between the device and the bucket — App Engine
+only ever carries the redirect, the upload ticket and the step that writes the row. That is not a
+nicety: App Engine caps a request at 32MB against a 500MB file limit, so proxying could not work.
 
 `Transport` (in `HelmsleyAPI.swift`) builds those transfers as `URLSessionTask`s rather than using
 the async conveniences, because the framework wants the task's `Progress`: it is the percentage the
@@ -222,12 +226,21 @@ Identical on both platforms — it is the same extension.
 | New folder | the same places |
 | Rename | wherever the portal allows it — including the folders it placed itself, since a folder's identity is its type and a renamed `Shared` is still the shared folder |
 | Move, delete, trash | anywhere but the folders the tree itself placed, which move only when the thing they belong to changes state |
-| Save changes back | **no** — refused with an explanation |
+| Save changes back | wherever the portal calls the row writable, by the ticket → bucket → save path |
 
-Saving changes back is the one refusal that is the same everywhere: nothing replaces a file's bytes
-under the same row. A row's bytes are stored under a key derived from its content hash, so different
-bytes are a different row — offering `.allowsWriting` would mean accepting a save in Finder that
-quietly never reached the server.
+Saving works the way a drop does, and differs at each end. The ticket names the file whose bytes are
+being replaced rather than a folder to land in, so an unwritable one is refused before a byte moves;
+the last step (`POST /api/files/documents/:id/content`) updates the row that is already there instead
+of writing a new one. The row keeps its id, so every reference the system holds goes on resolving —
+what changes is its content hash, which is its version, and its `updated_at`, which is its Date
+Modified. The displaced object in the bucket is left to the portal's nightly sweep, which is what
+that sweep is for.
+
+Two things are deliberately not done. Bytes that hash to what the row already carries are not a
+change — the staged copy is dropped and the row is left alone, so an application that rewrites a file
+it did not alter does not restamp its date. And the last writer wins: the framework hands over a base
+version, but two admins saving one document within a minute of each other is not something this tree
+does, and a refusal would strand an edit the user has already committed to on their own disk.
 
 Everything else in that table is a *server* answer, not a rule this app holds. Each listing and each
 by-id lookup carries a `permissions` block — `writable`, `renamable`, `movable`, `deletable` — that
@@ -326,7 +339,7 @@ All in `../Helmsley`:
 | `backend/utils/http/bearerAdmin.js` | **new** — authenticates a request by OAuth access token instead of by session cookie |
 | `backend/utils/domain/files/fileTree.js` | the tree itself: the skeleton, the walk, declared folders, and `permissionsFor()` — the whole of who may do what, pure and read off the ancestor chain the walk already loaded |
 | `backend/utils/domain/files/fileReads.js` | listing a folder's files, one row by id, and the bin. `listTrash` carries each row's permissions out with it, since the chain they were read from is gone by the time the volume asks |
-| `backend/utils/domain/files/fileWrites.js` | everything that changes it: new folder, rename, move, trash, restore, purge, finalise — each re-reading permission rather than trusting a caller |
+| `backend/utils/domain/files/fileWrites.js` | everything that changes it: new folder, rename, move, trash, restore, purge, finalise, and a save over a file's bytes — each re-reading permission rather than trusting a caller |
 | `backend/utils/domain/documents/stagedUpload.js` | the bucket half of an upload |
 | `backend/routes/admin/files.js` | the dashboard explorer's reading half, over the same tree — so the two surfaces cannot come to disagree about it |
 | `backend/routes/admin/mcp/oauthProvider.js` | resolves additional statically registered OAuth clients |
@@ -348,6 +361,7 @@ The move onto one tree took three more changes, all so a filesystem could be bui
 | `fileProvider.js` | a row directly under the tree's root reports **no** parent, rather than the root row's id. The volume addresses the root as its mount point, and an item that named the row instead would hang off an identifier no listing ever vends |
 | `fileTree.js` | a declared folder is not `renamable`. Every write on one is refused — there is no row to change, and the name comes from the declaration — but the other two were already false for a slug, so this was the one that had to be said |
 | `fileProvider.js`, `fileTree.js` | every row carries `uploadDate` and `modifiedDate` — `created_at` and `updated_at` — on folders as well as files, since a filesystem shows a date against both. `NODE_COLUMNS` carries the instants for the folder half, which is also why `chainOf()`'s recursive union now spells its columns once instead of twice |
+| `fileProvider.js`, `fileWrites.js` | a save: `/upload-ticket` takes `replaces`, and `POST /documents/:id/content` puts the staged bytes on the row that is already there — `replaceFileContents()`, the one write that moves a file's `updated_at`. The other four stopped moving it (`TOUCH_UNLESS_FILE`), which is what makes that column a Date Modified rather than a record of the last time anyone touched the row |
 
 ### Why OAuth rather than the session cookie
 

@@ -5,11 +5,11 @@ import Foundation
 /// The portal's `created_at` and `updated_at`, which reach here as a `timestamptz` serialised into
 /// JSON: ISO 8601 in UTC, with fractional seconds where the instant has them.
 ///
-/// `created_at` is when a row was written, and for a file that is also when its content was written
-/// — bytes are never replaced under a row, since a re-upload inserts a new one, which is the same
-/// fact `.allowsWriting` is withheld for. `updated_at` moves on a rename, a move and a trip through
-/// the bin, and on nothing else, so it is what a *folder* last changed and never what a file's
-/// content did.
+/// `created_at` is when a row was written. `updated_at` is when a file's bytes were last replaced —
+/// it starts equal to `created_at` and moves only on a save, never on a rename, a move or a trip
+/// through the bin — which is what makes it a Date Modified rather than a record of the last time
+/// anybody touched the row. A folder has no bytes to date, so for one it is the other thing: when
+/// the row itself last changed, which is the only "modified" a folder here has.
 enum Timestamp {
 
     static func date(_ value: String?) -> Date? {
@@ -249,20 +249,55 @@ struct HelmsleyAPI: Sendable {
     /// The bytes never pass through the portal — App Engine caps a request at 32MB — so the middle
     /// step talks to a completely different host, using a URL signed for exactly this one object.
     func upload(to destination: Destination, filename: String, mime: String?, fileURL: URL, reporting parent: Progress? = nil) async throws -> RemoteFile {
-        struct Ticket: Decodable {
-            let uploadId: String
-            let uploadUrl: String
-            let contentType: String
-            let maxBytes: Int64
-        }
-
         // NSNull, not a missing key: the server reads null as "this drop declares no content type"
         // and falls back to octet-stream, which is a different thing from the key being absent.
         let ticket: Ticket = try await post(
             base.appendingPathComponent("upload-ticket"),
             body: destination.body(with: ["contentType": mime ?? NSNull()])
         )
+        try await send(ticket, fromFile: fileURL, reporting: parent)
 
+        struct Wrapper: Decodable { let file: RemoteFile }
+        let wrapper: Wrapper = try await post(
+            base.appendingPathComponent("finalise"),
+            body: destination.body(with: ["uploadId": ticket.uploadId, "filename": filename])
+        )
+        return wrapper.file
+    }
+
+    /// Replaces one file's bytes under the same row — a save in the volume rather than a drop into
+    /// a folder.
+    ///
+    /// The same three steps, differing at each end: the ticket names the file being replaced instead
+    /// of the folder something is landing in, so an unwritable one is refused before a byte moves,
+    /// and the last step updates the row that is already there instead of writing a new one. The row
+    /// keeps its id, so nothing the system is holding stops resolving; what changes is its content
+    /// hash, which is its version, and its `updated_at`, which is its Date Modified.
+    func replaceContents(id: String, mime: String?, fileURL: URL, reporting parent: Progress? = nil) async throws -> RemoteFile {
+        let ticket: Ticket = try await post(
+            base.appendingPathComponent("upload-ticket"),
+            body: ["replaces": id, "contentType": mime ?? NSNull()]
+        )
+        try await send(ticket, fromFile: fileURL, reporting: parent)
+
+        struct Wrapper: Decodable { let file: RemoteFile }
+        let wrapper: Wrapper = try await post(
+            documentURL(id).appendingPathComponent("content"),
+            body: ["uploadId": ticket.uploadId]
+        )
+        return wrapper.file
+    }
+
+    /// What the portal answers a request for somewhere to put bytes with.
+    private struct Ticket: Decodable {
+        let uploadId: String
+        let uploadUrl: String
+        let contentType: String
+        let maxBytes: Int64
+    }
+
+    /// The middle step of both: the bytes, straight to Cloud Storage.
+    private func send(_ ticket: Ticket, fromFile fileURL: URL, reporting parent: Progress?) async throws {
         var put = URLRequest(url: URL(string: ticket.uploadUrl)!)
         put.httpMethod = "PUT"
         // Both headers were signed into the URL, so they must be sent back exactly: Cloud Storage
@@ -272,16 +307,9 @@ struct HelmsleyAPI: Sendable {
 
         // No Authorization header of ours goes to the bucket: the signature in the URL is the whole
         // credential, and the portal's bearer token has no business on another host.
-        let (_, putResponse) = try await Transport.upload(put, fromFile: fileURL, reporting: parent)
-        let putStatus = (putResponse as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(putStatus) else { throw APIError.uploadRejected(status: putStatus) }
-
-        struct Wrapper: Decodable { let file: RemoteFile }
-        let wrapper: Wrapper = try await post(
-            base.appendingPathComponent("finalise"),
-            body: destination.body(with: ["uploadId": ticket.uploadId, "filename": filename])
-        )
-        return wrapper.file
+        let (_, response) = try await Transport.upload(put, fromFile: fileURL, reporting: parent)
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(status) else { throw APIError.uploadRejected(status: status) }
     }
 
     func delete(id: String) async throws {

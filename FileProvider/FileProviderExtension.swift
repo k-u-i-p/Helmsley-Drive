@@ -238,18 +238,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             return progress
         }
 
-        // Rewriting in place has no endpoint behind it anywhere in the tree, for the reason
-        // `.allowsWriting` is never offered: a file's bytes are not something the table lets you
-        // replace under the same row.
-        guard !changedFields.contains(.contents) else {
-            completionHandler(nil, [], false, FileProviderError.unsupported("Helmsley files cannot be edited in place. Save a copy and file that instead."))
+        // A save. The framework hands over the whole file rather than a patch, and the portal takes
+        // it as a replacement for the row's bytes — so what arrives here is the new contents on
+        // disk, and what goes back is the row it landed on.
+        let rewriting = changedFields.contains(.contents)
+        if rewriting && newContents == nil {
+            completionHandler(nil, [], false, FileProviderError.unsupported("A save has to arrive with the file's new contents."))
             return progress
         }
 
         // Anything else Finder wants to record — a tag, a last-used date — is local, so it is
         // accepted unchanged. The mount point is not a row and has nothing to change.
         let relocation = changedFields.intersection([.filename, .parentItemIdentifier])
-        guard let itemID = identity.nodeID, !relocation.isEmpty else {
+        guard let itemID = identity.nodeID, rewriting || !relocation.isEmpty else {
             return acknowledge(identity, progress: progress, completionHandler: completionHandler)
         }
 
@@ -272,6 +273,20 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     try await api.rename(id: itemID, to: item.filename)
                 }
 
+                // The bytes last, so a save that also moved the file writes them where it ended up
+                // — and so the row's Date Modified is the save's, which is the moment the user will
+                // recognise. The type is the item's own: a save cannot rename anything, so it is
+                // the one the name already implied.
+                if rewriting, let contents = newContents {
+                    Log.provider.info("saving \(item.filename, privacy: .public)")
+                    _ = try await api.replaceContents(
+                        id: itemID,
+                        mime: item.contentType?.preferredMIMEType,
+                        fileURL: contents,
+                        reporting: progress
+                    )
+                }
+
                 let updated = try await self.item(for: identity)
                 await signal.fire()
                 completionHandler(updated, [], false, nil)
@@ -279,7 +294,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 Log.provider.error("modifying \(itemID, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 completionHandler(nil, [], false, FileProviderError.translate(error))
             }
-            progress.completedUnitCount = 1
+            // Only where nothing was transferred. A save hands this progress to the upload, which
+            // takes over its units and completes them as the bytes go; counting a second unit on
+            // top of that would report a transfer as more than finished.
+            if !rewriting { progress.completedUnitCount = 1 }
         }
         progress.cancellationHandler = { work.cancel() }
         return progress

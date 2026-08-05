@@ -17,9 +17,10 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     /// The two dates Finder shows. Nil where the portal did not say, which is what a portal
     /// predating them and a folder with no row of its own both amount to.
     ///
-    /// For a file they are one instant, because a file's bytes are written once and never replaced.
-    /// A folder has no content of its own to date, so what it reports as modified is when the row
-    /// last changed — see `Timestamp`.
+    /// For a file they are one instant until it is first saved over, since the portal starts
+    /// `updated_at` at `created_at` and moves it only when the bytes are replaced. A folder has no
+    /// content of its own to date, so what it reports as modified is when the row last changed —
+    /// see `Timestamp`.
     let creationDate: Date?
     let contentModificationDate: Date?
 
@@ -70,9 +71,12 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
         var created: String?
         var modified: String?
 
-        /// A file's: one instant under both names, since its bytes are as old as its row.
+        /// A file's: when the row was written, and when its bytes were last replaced. The same
+        /// instant under both names until somebody saves over it, which is the truth about a file
+        /// nobody has edited. The upload date stands in where a portal predating the save answers
+        /// with no `updated_at` at all, since the two agreed then by definition.
         static func file(_ remote: RemoteFile) -> Dates {
-            Dates(created: remote.uploadDate, modified: remote.uploadDate)
+            Dates(created: remote.uploadDate, modified: remote.modifiedDate ?? remote.uploadDate)
         }
     }
 
@@ -254,9 +258,12 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     /// says the same thing about a row in the bin as it did the moment before, since throwing
     /// something away does not move it; what being in the bin costs is added here.
     ///
-    /// No `.allowsWriting` anywhere. A row is stored under a key derived from its content hash, so
-    /// different bytes are a different row rather than an edit to this one — offering it would mean
-    /// accepting a save in Finder that quietly never reached the server.
+    /// `.allowsWriting` is a file's, and the row's own `writable` decides it — the same flag that
+    /// lets a folder be filed into, which is the server's answer for the row rather than anything
+    /// this app works out. The portal now takes a replacement for a file's bytes under the same row,
+    /// so a save in Finder reaches it: the row keeps its id and its place, and what changes is its
+    /// content hash and its Date Modified. Nothing in the bin offers it, because the portal refuses
+    /// to change anything it is holding.
     ///
     /// In the bin: reading, putting back (a reparent, hence `.allowsReparenting`), and purging.
     /// The server refuses a rename or a refile while something is trashed. A step further in, under
@@ -271,7 +278,7 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
 
         switch standing {
         case .live:
-            if folder && permissions.writable { capabilities.insert(.allowsAddingSubItems) }
+            if permissions.writable { capabilities.insert(folder ? .allowsAddingSubItems : .allowsWriting) }
             if permissions.renamable { capabilities.insert(.allowsRenaming) }
             if permissions.movable { capabilities.insert(.allowsReparenting) }
             // Both are the server's `deletable`, because both are what it checks: a Finder delete
