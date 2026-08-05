@@ -2,18 +2,13 @@ import Foundation
 
 // MARK: - Wire types
 
-/// What the portal will let this admin do to one row, decided by the row's whole ancestor chain and
-/// answered rather than guessed at.
+/// What the portal will let this admin do to one row, decided by the row's whole ancestor chain.
 ///
-/// The rules are not simple enough to reproduce here and are not this app's to hold in any case: an
-/// admin's own folder is theirs alone and readable by a super admin who still may not write in it,
-/// `/Orphaned` is a record and so takes nothing at all, and a folder the tree itself placed can be
-/// renamed but never moved or thrown away. Every one of those is a statement about where a row sits
-/// rather than about the row, and the server is the only thing that knows.
-///
-/// So the volume asks. What comes back is turned straight into what Finder offers, which is the
-/// point: an operation the portal would refuse is one the user is never given, rather than one that
-/// fails after they have committed to it.
+/// Asked rather than guessed at, because the rules are statements about where a row sits and only
+/// the server knows: an admin's own folder is readable by a super admin who still may not write in
+/// it, `/Orphaned` takes nothing at all, a folder the tree itself placed may be renamed but never
+/// moved. The answer becomes what Finder offers, so an operation the portal would refuse is one the
+/// user is never given rather than one that fails after they have committed to it.
 struct Permissions: Codable, Sendable, Equatable {
     /// Whether things can be put *into* this folder — a new file, or a new folder.
     let writable: Bool
@@ -33,7 +28,7 @@ struct Permissions: Codable, Sendable, Equatable {
         self.deletable = writable
     }
 
-    /// For the snapshot the enumerators diff, so a folder that becomes read-only under somebody is
+    /// Part of an item's metadata version, so a folder that becomes read-only under somebody is
     /// re-reported rather than left offering writes it no longer has.
     var signature: String { "\(writable ? "w" : "-")\(renamable ? "r" : "-")\(movable ? "m" : "-")\(deletable ? "d" : "-")" }
 }
@@ -50,7 +45,6 @@ struct RemoteFile: Codable, Sendable, Equatable {
     let mime: String?
     let size: Int64?
     let version: String
-    let uploadDate: String?
 
     /// Which folder holds it, or null for a row directly under the tree's root — which is the mount
     /// point, and is addressed as a container rather than by the root row's own id.
@@ -78,14 +72,10 @@ struct RemoteFile: Codable, Sendable, Equatable {
     var isCovered: Bool { covered == true }
 }
 
-/// One subfolder. `segment` is what goes back in a path and `id` is what addresses it on its own;
-/// they are the same string for a row and differ only for a declared folder, which has no row to be
-/// addressed by and so carries its parent in the id.
-///
-/// `name` is separate from both because a folder is *labelled* rather than named: renaming a client
-/// in the portal renames their folder, and nothing anybody holds stops resolving.
+/// One subfolder. `id` addresses it; `name` is separate because a folder is *labelled* rather than
+/// named — renaming a client in the portal renames their folder, and nothing anybody holds stops
+/// resolving.
 struct RemoteFolder: Codable, Sendable, Equatable {
-    let segment: String
     let name: String
     let id: String
     let writable: Bool
@@ -96,12 +86,10 @@ struct Listing: Codable, Sendable {
     let folders: [RemoteFolder]
     let files: [RemoteFile]
 
-    /// The listed folder's own standing, which is what the files inside it inherit: a file's rules
-    /// are its folder's, since the two share every ancestor that decides them.
+    /// Whether things can be put into the folder that was listed.
     let writable: Bool
-    let permissions: Permissions?
 
-    /// Whether the folder listed is in the bin — itself thrown away, or under something that was.
+    /// Whether that folder is in the bin — itself thrown away, or under something that was.
     ///
     /// Not inferable from `writable`, which is false wherever a folder is merely read-only.
     /// Optional so that a listing from a portal that predates a browsable bin still decodes, and
@@ -112,10 +100,8 @@ struct Listing: Codable, Sendable {
 
     /// What to credit a *file* in this folder with when the portal did not say.
     ///
-    /// Taken from whether the folder can be written to rather than from the folder's own flags: a
-    /// file is never one of the folders the tree placed, so it may be moved and thrown away wherever
-    /// its folder can be changed at all — which is not true of the folder itself, and reading its
-    /// answer here would hide a perfectly ordinary drag out of `/Shared`.
+    /// A file is never one of the folders the tree placed, so it may be moved and thrown away
+    /// wherever its folder can be written to at all.
     var assumedForFiles: Permissions { Permissions(assumedFrom: writable) }
 }
 
@@ -160,7 +146,7 @@ struct HelmsleyAPI: Sendable {
 
     static let shared = HelmsleyAPI()
 
-    private var base: URL { Configuration.baseURL.appendingPathComponent("api/files") }
+    private let base = Configuration.baseURL.appendingPathComponent("api/files")
 
     // MARK: Reads
 
@@ -237,7 +223,7 @@ struct HelmsleyAPI: Sendable {
         // and falls back to octet-stream, which is a different thing from the key being absent.
         let ticket: Ticket = try await post(
             base.appendingPathComponent("upload-ticket"),
-            body: destination.body.merging(["contentType": mime ?? NSNull()]) { current, _ in current }
+            body: destination.body(with: ["contentType": mime ?? NSNull()])
         )
 
         var put = URLRequest(url: URL(string: ticket.uploadUrl)!)
@@ -256,7 +242,7 @@ struct HelmsleyAPI: Sendable {
         struct Wrapper: Decodable { let file: RemoteFile }
         let wrapper: Wrapper = try await post(
             base.appendingPathComponent("finalise"),
-            body: destination.body.merging(["uploadId": ticket.uploadId, "filename": filename]) { current, _ in current }
+            body: destination.body(with: ["uploadId": ticket.uploadId, "filename": filename])
         )
         return wrapper.file
     }
@@ -282,7 +268,7 @@ struct HelmsleyAPI: Sendable {
         struct Wrapper: Decodable { let folder: RemoteFolder }
         let wrapper: Wrapper = try await post(
             base.appendingPathComponent("folders"),
-            body: destination.body.merging(["name": name]) { current, _ in current }
+            body: destination.body(with: ["name": name])
         )
         return wrapper.folder
     }
@@ -303,7 +289,7 @@ struct HelmsleyAPI: Sendable {
     @discardableResult
     func move(id: String, to destination: Destination) async throws -> String {
         struct Wrapper: Decodable { let name: String }
-        let wrapper: Wrapper = try await post(itemURL(id, "move"), body: destination.body)
+        let wrapper: Wrapper = try await post(itemURL(id, "move"), body: destination.body())
         return wrapper.name
     }
 
@@ -314,12 +300,12 @@ struct HelmsleyAPI: Sendable {
     }
 
     /// Out again — into `destination` where one is named, which is what a drag out of the bin
-    /// supplies, and back where it was otherwise. The name may come back numbered: while the row sat in the bin its
-    /// name was not in use, so something else may have taken it in the meantime.
+    /// supplies, and back where it was otherwise. The name may come back numbered: while the row sat
+    /// in the bin its name was not in use, so something else may have taken it in the meantime.
     @discardableResult
     func restore(id: String, to destination: Destination?) async throws -> String {
         struct Wrapper: Decodable { let name: String }
-        let wrapper: Wrapper = try await post(itemURL(id, "restore"), body: destination?.body ?? [:])
+        let wrapper: Wrapper = try await post(itemURL(id, "restore"), body: destination?.body() ?? [:])
         return wrapper.name
     }
 
@@ -496,8 +482,12 @@ final class RedirectSanitiser: NSObject, URLSessionTaskDelegate, @unchecked Send
         newRequest request: URLRequest,
         completionHandler: @escaping (URLRequest?) -> Void
     ) {
-        let sameHost = request.url?.host == task.originalRequest?.url?.host
-        guard !sameHost else { return completionHandler(request) }
+        // Scheme as well as host, and case-insensitively: a host is not case-sensitive, and an
+        // https -> http redirect back to the portal would otherwise put the token on the wire.
+        let origin = task.originalRequest?.url
+        let sameOrigin = request.url?.host?.lowercased() == origin?.host?.lowercased()
+            && request.url?.scheme == origin?.scheme
+        guard !sameOrigin else { return completionHandler(request) }
 
         var stripped = request
         stripped.setValue(nil, forHTTPHeaderField: "Authorization")

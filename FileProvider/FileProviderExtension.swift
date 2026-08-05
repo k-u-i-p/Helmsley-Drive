@@ -48,7 +48,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             do {
                 completionHandler(try await item(for: identity), nil)
             } catch {
-                Log.provider.error("item(for: \(identity.destination.logDescription, privacy: .public)) failed: \(error.localizedDescription, privacy: .public)")
+                Log.provider.error("item(for: \(identity.logDescription, privacy: .public)) failed: \(error.localizedDescription, privacy: .public)")
                 completionHandler(nil, FileProviderError.translate(error))
             }
             progress.completedUnitCount = 1
@@ -62,11 +62,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     /// row with an id, and `/items/:id` says what it is, where it sits, and what may be done to it.
     /// One request, whatever was asked for — which is the whole of what one tree bought.
     ///
-    /// One thing is checked rather than passed on: an item with no name aborts the process the
-    /// moment the framework sees it, so what the server said is refused here instead of crashing the
-    /// extension in the caller's own completion handler. `.noSuchItem` because that is what it is —
-    /// a filesystem has no way to show something it cannot name — and because it is the answer that
-    /// makes the system drop one it is already holding rather than ask for it again forever.
+    /// A nameless row is refused here rather than passed on, since handing one over aborts the
+    /// process (`FileProviderItem.isNameable`). `.noSuchItem` because that is what it is, and
+    /// because it makes the system drop the item rather than ask for it again forever.
     private func item(for identity: ItemIdentity) async throws -> NSFileProviderItem {
         let item: FileProviderItem
 
@@ -78,7 +76,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         }
 
         guard item.isNameable else {
-            Log.provider.error("\(identity.destination.logDescription, privacy: .public) has no name — refused rather than handed over")
+            Log.provider.error("\(identity.logDescription, privacy: .public) has no name — refused rather than handed over")
             throw NSFileProviderError(.noSuchItem)
         }
         return item
@@ -143,11 +141,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             return progress
         }
 
-        // A folder is a row wherever it is in this tree, so a new one is a request the server can
-        // always be asked. Whether it will take it is the destination's own answer, which the
-        // listing already carried: a folder that refuses one never offered `.allowsAddingSubItems`,
-        // so Finder does not get this far, and a race against somebody else's change is refused by
-        // the server in a sentence worth showing.
+        // A folder is a row wherever it is in this tree, so the server can always be asked for one.
+        // Whether it will take it is the destination's own answer, which the listing already carried
+        // — a folder that refuses one never offered `.allowsAddingSubItems`, so Finder does not get
+        // this far, and a race against somebody else's change is refused in a sentence worth showing.
         if itemTemplate.contentType == .folder {
             return makeFolder(in: parent, named: itemTemplate.filename, progress: progress, completionHandler: completionHandler)
         }
@@ -217,7 +214,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     [], false, nil
                 )
             } catch {
-                Log.provider.error("creating a folder in \(parent.destination.logDescription, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                Log.provider.error("creating a folder in \(parent.logDescription, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 completionHandler(nil, [], false, FileProviderError.translate(error))
             }
         }
@@ -259,14 +256,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let target = item.parentItemIdentifier
         let work = Task {
             do {
-                // Where the item is *now*, asked of the server rather than read off the item. The
-                // one handed over describes what it should become — its parentItemIdentifier is the
-                // destination — so the folder being left behind has to be looked up, and it is what
-                // tells a restore apart from an ordinary move.
-                let source = FileProviderItem.item(try await api.item(id: itemID)).parentItemIdentifier
-
                 if relocation.contains(.parentItemIdentifier) {
-                    try await self.reparent(itemID, from: source, to: target)
+                    // Whether the item is in the bin *now*, asked of the server rather than read off
+                    // the item: the one handed over describes what it should become, so where it is
+                    // leaving from is not in it — and that is what tells a restore from a move.
+                    let wasTrashed = try await api.item(id: itemID).isTrashed
+                    try await self.reparent(itemID, fromTrash: wasTrashed, to: target)
                 }
                 // Moved first, then renamed — because the two settle a name clash differently. A
                 // move numbers what it cannot keep, so doing it first parks the item in the target
@@ -295,26 +290,25 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     ///
     /// The framework has no separate verb for throwing something away: it reparents the item into
     /// `.trashContainer` and expects the item to come back saying it is trashed. Taking it out again
-    /// is the same move in reverse — an undo, or a drag out of the bin — and the move names where it
-    /// is going, so nothing here has to remember where the item was. Finder's own Put Back never
+    /// is the same move in reverse — an undo, or a drag out of the bin. Finder's own Put Back never
     /// sends one and cannot be made to; the trash section of the README says why.
     private func reparent(
         _ itemID: String,
-        from source: NSFileProviderItemIdentifier,
+        fromTrash: Bool,
         to target: NSFileProviderItemIdentifier
     ) async throws {
         if target == .trashContainer {
             return try await api.trash(id: itemID)
         }
 
-        // Any folder of the tree is a destination now, since all of them are rows — dragging
-        // something from a client's folder into Shared is a move like any other, and the server
-        // takes the whole subtree across in one go. Whether this particular folder will have it is
-        // the server's to answer; what arrives here is only an identifier that has to name one.
+        // Any folder of the tree is a destination, since all of them are rows — dragging something
+        // from a client's folder into Shared is a move like any other, and the server takes the
+        // whole subtree across in one go. Whether this particular folder will have it is the
+        // server's to answer; what arrives here is only an identifier that has to name one.
         guard let destination = ItemIdentity(target) else {
             throw FileProviderError.unsupported("That is not a folder of the Helmsley tree.")
         }
-        if source == .trashContainer {
+        if fromTrash {
             // Restored and relocated in one step, because that is what dragging something out of the
             // trash is. A restore to where it came from sends the same request naming that folder.
             _ = try await api.restore(id: itemID, to: destination.destination)
@@ -350,25 +344,29 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
 
+        // An identifier this volume no longer mints is one the system should drop, not one to
+        // explain — anything left over from the two-tree era arrives here as `.noSuchItem`.
+        guard let identity = ItemIdentity(identifier) else {
+            completionHandler(NSFileProviderError(.noSuchItem))
+            return progress
+        }
         // Anything but the mount point, which is not a row and so has nothing to remove.
         //
-        // This is the permanent one. A Finder delete on something that can be trashed arrives as a
-        // reparent into the bin instead (modifyItem), so what reaches here is Delete Immediately or
-        // an emptied trash.
-        guard let identity = ItemIdentity(identifier), let itemID = identity.nodeID else {
+        // This is the permanent delete. A Finder delete on something that can be trashed arrives as
+        // a reparent into the bin instead (modifyItem), so what reaches here is Delete Immediately
+        // or an emptied trash.
+        guard let itemID = identity.nodeID else {
             completionHandler(FileProviderError.unsupported("The Helmsley volume itself cannot be deleted."))
             return progress
         }
 
         Task {
             do {
-                // Nothing is looked up first any more. This used to ask the server which folder the
-                // item sat in, before the delete made that unanswerable, so the signal could name it
-                // — and naming it was worth nothing: a replicated extension's signals are only ever
-                // about the working set, and what the folder lost is worked out when the system comes
-                // asking for the working set's changes.
+                // Nothing is looked up first: a replicated extension's signals are only ever about
+                // the working set, so naming the folder the item sat in would buy nothing — what
+                // the folder lost is worked out when the system comes asking for those changes.
                 //
-                // A folder takes what is under it — including anything already in the bin from
+                // A folder takes what is under it, including anything already in the bin from
                 // inside it, which is gone either way once the folder holding it is.
                 try await api.delete(id: itemID)
                 await signal.fire()

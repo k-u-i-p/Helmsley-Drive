@@ -54,18 +54,17 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     /// Where an item stands in relation to the bin, which is what decides the writes it may offer.
     ///
     /// Three states rather than two, because the top of something thrown away is not the same as the
-    /// middle of it. The bin lists the top — a directory takes its contents with it, so only the top
-    /// is even marked — and that is the one that can be put back. Everything under it is reachable
-    /// only by looking inside, and the portal refuses to rename or refile any of it; a restore is
-    /// worse than refused, answering by doing nothing at all, since the mark it would clear is on
-    /// the folder above. Offering a restore down there would be a gesture that silently did nothing.
+    /// middle of it. Only the top is marked — a directory takes its contents with it — and only the
+    /// top can be put back. Below it the portal refuses a rename or a refile, and answers a restore
+    /// by doing nothing at all, since the mark it would clear is on the folder above; offering one
+    /// there would be a gesture that silently did nothing.
     ///
-    /// What is left inside is reading and purging, and both are real: bytes are still fetched by id,
-    /// and a delete still takes the row and everything under it.
+    /// Kept apart from `Permissions`, which says nothing about the bin: those rules are about where
+    /// a row *sits*, and a row in the trash sits where it always did.
     ///
-    /// Kept apart from `Permissions`, which the server answers and which says nothing about the bin:
-    /// the rules there are about where a row *sits*, and a row in the trash sits where it always did.
-    enum Standing {
+    /// `String`-backed because it goes into the item's metadata version, which is what makes an
+    /// item whose standing changed under it get re-reported.
+    enum Standing: String {
         /// In the tree, where everything the portal allows this row is allowed.
         case live
         /// The top of something thrown away: listed by the bin, put back or purged from there.
@@ -78,16 +77,14 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
 
     /// Whether this item can be handed over at all, which comes down to its having a name.
     ///
-    /// An empty filename is not an error as far as `FileProvider` is concerned — it is a programming
-    /// mistake, and the assertion behind it (`__FILEPROVIDER_BAD_ITEM_MISSING_FILENAME__`) aborts the
-    /// process. So a nameless row is not a request that fails: it is the extension dying mid-call,
-    /// taking every other operation in flight down with it, and the system sees only that the
-    /// connection was invalidated. Nothing surfaces to the user, and what they asked for silently
-    /// never happened.
+    /// An empty filename is not an error as far as `FileProvider` is concerned but a programming
+    /// mistake: the assertion behind it (`__FILEPROVIDER_BAD_ITEM_MISSING_FILENAME__`) aborts the
+    /// process, taking every other operation in flight with it, and the system sees only that the
+    /// connection was invalidated. Nothing surfaces to the user.
     ///
     /// A row like that is always the server's mistake, and there is nothing a filesystem could show
-    /// for one in any case — so it is refused at this end, where refusing is something the framework
-    /// can act on and something the log can record.
+    /// for one — so it is refused at this end, where the framework can act on it and the log can
+    /// record it.
     var isNameable: Bool { !filename.isEmpty }
 
     // MARK: - The mount point
@@ -132,9 +129,8 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
             capabilities: capabilities(permissions, folder: true, standing: standing),
             documentSize: nil,
             // A folder's content version is fixed: the portal has no per-folder revision to read,
-            // and what actually drives re-listing is the enumerator's sync anchor, which is
-            // computed from the listing itself (FolderEnumerator).
-            version: Self.version(content: "folder", metadata: "\(remote.name)|\(permissions.signature)")
+            // and what drives re-listing is the child enumerator's own sync anchor.
+            version: Self.version(content: "folder", metadata: "\(remote.name)|\(permissions.signature)|\(standing.rawValue)")
         )
     }
 
@@ -154,7 +150,10 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
             documentSize: remote.size.map(NSNumber.init(value:)),
             // The content hash. It changes when and only when the bytes do, so a materialised copy
             // stays valid until the file is genuinely replaced.
-            version: Self.version(content: remote.version, metadata: "\(remote.filename)|\(permissions.signature)")
+            version: Self.version(
+                content: remote.version,
+                metadata: "\(remote.filename)|\(permissions.signature)|\(standing.rawValue)"
+            )
         )
     }
 
@@ -195,7 +194,7 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
             // a materialised copy stays valid through the bin and back out again.
             version: Self.version(
                 content: remote.version,
-                metadata: "\(remote.filename)|\(remote.isTrashed)|\(permissions.signature)"
+                metadata: "\(remote.filename)|\(permissions.signature)|\(standing.rawValue)"
             )
         )
     }
@@ -205,21 +204,17 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     /// What may be done to an item: what the portal allows it, narrowed by where it stands in
     /// relation to the bin.
     ///
-    /// The two are asked separately because they are separate questions. `Permissions` is the
-    /// server's rule about where the row sits in the tree — whose folder it is under, whether the
-    /// tree itself placed it — and it says the same thing about a row in the bin as it did the
-    /// moment before, since throwing something away does not move it. What being in the bin costs is
-    /// added here.
+    /// Two separate questions. `Permissions` is the server's rule about where the row sits, and it
+    /// says the same thing about a row in the bin as it did the moment before, since throwing
+    /// something away does not move it; what being in the bin costs is added here.
     ///
-    /// No `.allowsWriting` anywhere. Nothing replaces a file's bytes in place: a row is stored under
-    /// a key derived from its content hash, so different bytes are a different row rather than an
-    /// edit to this one. Offering it would mean accepting a save in Finder that quietly never
-    /// reached the server.
+    /// No `.allowsWriting` anywhere. A row is stored under a key derived from its content hash, so
+    /// different bytes are a different row rather than an edit to this one — offering it would mean
+    /// accepting a save in Finder that quietly never reached the server.
     ///
-    /// In the bin, what is left is reading it, putting it back — which is a reparent, hence
-    /// `.allowsReparenting` — and purging it. Renaming and refiling are refused by the server while
-    /// something is trashed, so they are not offered here either. A step further in, under a folder
-    /// that was thrown away, even putting back goes: it is the folder above that carries the mark.
+    /// In the bin: reading, putting back (a reparent, hence `.allowsReparenting`), and purging.
+    /// The server refuses a rename or a refile while something is trashed. A step further in, under
+    /// a trashed folder, even putting back goes — it is the folder above that carries the mark.
     private static func capabilities(
         _ permissions: Permissions,
         folder: Bool,
@@ -265,5 +260,15 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
             contentVersion: Data(SHA256.hash(data: Data(content.utf8))),
             metadataVersion: Data(SHA256.hash(data: Data(metadata.utf8)))
         )
+    }
+
+    /// What the enumerators record for this item and diff against next time.
+    ///
+    /// The version itself, rather than a string assembled a second time alongside it: the diff and
+    /// the version have to agree about what counts as a change, and two places spelling that out
+    /// separately is how they come to disagree — silently, since what it costs is a change the
+    /// system is never told about.
+    var snapshotSignature: String {
+        itemVersion.contentVersion.base64EncodedString() + itemVersion.metadataVersion.base64EncodedString()
     }
 }

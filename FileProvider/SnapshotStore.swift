@@ -21,12 +21,10 @@ actor SnapshotStore {
 
     /// How many past listings a container keeps.
     ///
-    /// One would do if the anchor the system holds always named this store's most recent listing,
-    /// and most of the time it does. It does not have to. The system samples `currentSyncAnchor` on
-    /// its own schedule, abandons enumerations it has decided against, and comes back from a
-    /// relaunch holding whatever it had when it stopped — any of which leaves it asking from a point
-    /// this process has already moved past. Diffing that against the newest listing is how a change
-    /// gets quietly answered "nothing here", so a few are kept and the right one is chosen.
+    /// One would do if the anchor the system holds always named the most recent, and most of the
+    /// time it does — but it samples `currentSyncAnchor` on its own schedule, abandons enumerations
+    /// it has decided against, and comes back from a relaunch holding whatever it had. Diffing an
+    /// older anchor against the newest listing is how a change gets quietly answered "nothing here".
     private static let retained = 5
 
     private let directory: URL?
@@ -114,6 +112,23 @@ actor SnapshotStore {
     /// will actually accept.
     private static func key(_ container: NSFileProviderItemIdentifier) -> String {
         SHA256.hash(data: Data(container.rawValue.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// What moved between two listings of the same container.
+    ///
+    /// Anything new and anything whose version changed, and the identifiers the newer listing no
+    /// longer holds. An unchanged item is left out entirely — reporting it would have the system
+    /// re-download bytes it already has.
+    nonisolated static func diff(
+        _ previous: Snapshot,
+        _ current: Snapshot,
+        over items: [NSFileProviderItem]
+    ) -> (updated: [NSFileProviderItem], deleted: [NSFileProviderItemIdentifier]) {
+        let updated = items.filter { previous[$0.itemIdentifier.rawValue] != current[$0.itemIdentifier.rawValue] }
+        let deleted = previous.keys
+            .filter { current[$0] == nil }
+            .map(NSFileProviderItemIdentifier.init(_:))
+        return (updated, deleted)
     }
 
     /// A stable fingerprint of a whole listing, which is what a sync anchor is: two enumerations

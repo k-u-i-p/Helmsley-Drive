@@ -47,22 +47,20 @@ protocol PolledContainer: AnyObject {
 /// looking, so the folder holding it stays as it was until the domain is removed and re-added. That
 /// is the whole of the "I had to sign out and back in" complaint.
 ///
-/// This actor has two jobs, and they are two halves of one mechanism.
+/// Two jobs, and they are two halves of one mechanism.
 ///
-/// It is the register of what somebody is looking at. The system makes an enumerator when it starts
-/// observing a folder and invalidates it when it stops, which is as close to "the user has this open"
-/// as anything here gets — and `pendingChanges()` is what the working set's enumerator asks for when
-/// the system comes for changes, since the working set is the only container the system takes them
-/// from. A folder nobody has open costs nothing; the tree at large is never walked.
+/// It is the register of what somebody is looking at: the system makes an enumerator when it starts
+/// observing a folder and invalidates it when it stops, which is as close to "the user has this
+/// open" as anything here gets. `pendingChanges()` is what the working set's enumerator asks for,
+/// since the working set is the only container the system takes changes from. A folder nobody has
+/// open costs nothing; the tree at large is never walked.
 ///
 /// And it notices, on a timer, that a folder has moved — which is what turns into a signal. The
-/// portal pushes now, so the timer runs at a fraction of its old rate, and covers what push cannot
-/// promise: a portal with no APNs key, a device whose registration failed, a push dropped while the
-/// machine was asleep.
+/// portal pushes now, so the timer runs at a fraction of its old rate and covers only what push
+/// cannot promise: no APNs key, a failed registration, a push dropped while the machine slept.
 ///
-/// One exception to what is watched: the working set is left out. Its enumerator is made once and
-/// kept for as long as the extension lives, so polling it would mean a request every interval
-/// forever. It has no need of it either — it is the container everything is reported *to*.
+/// The working set is left out of the watch: its enumerator lives as long as the extension, so
+/// polling it would mean a request every interval forever, and it is what everything is reported *to*.
 ///
 /// Detection costs one listing and the reporting enumeration costs a second. That is the price of a
 /// portal that cannot say what changed, and it is paid only when something has.
@@ -176,12 +174,11 @@ actor ChangePoller {
             do {
                 let (items, snapshot) = try await container.currentListing()
                 let previous = await SnapshotStore.shared.current(for: identifier)
-                guard SnapshotStore.signature(of: previous) != SnapshotStore.signature(of: snapshot) else { continue }
+                guard previous != snapshot else { continue }
 
-                updated += items.filter { previous[$0.itemIdentifier.rawValue] != snapshot[$0.itemIdentifier.rawValue] }
-                deleted += previous.keys
-                    .filter { snapshot[$0] == nil }
-                    .map(NSFileProviderItemIdentifier.init(_:))
+                let moved = SnapshotStore.diff(previous, snapshot, over: items)
+                updated += moved.updated
+                deleted += moved.deleted
                 await SnapshotStore.shared.record(snapshot, for: identifier)
             } catch {
                 // The folder keeps what it had, and the next round asks again. Debug rather than
@@ -271,8 +268,8 @@ actor ChangePoller {
         }
         let identifier = container.polledIdentifier
         do {
-            let current = SnapshotStore.signature(of: try await container.currentListing().1)
-            let held = SnapshotStore.signature(of: await SnapshotStore.shared.current(for: identifier))
+            let current = try await container.currentListing().1
+            let held = await SnapshotStore.shared.current(for: identifier)
             guard current != held else { return }
 
             // The working set, not this folder — signalling the folder is discarded (see
