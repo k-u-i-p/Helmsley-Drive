@@ -89,6 +89,13 @@ make is available everywhere the portal allows it rather than in one branch.
 A file's version is its content hash, which is also its key in the storage bucket. It changes when
 and only when the bytes do, so a downloaded copy stays valid until the file is genuinely replaced.
 
+That is also what settles the dates Finder shows. A file's bytes are written once and never
+rewritten — a re-upload inserts a new row — so `created_at` is both when it was created and when its
+content last changed, and the two dates against a file are one instant. `updated_at` moves on a
+rename, a move and a trip through the bin, which makes it what a *folder* last changed and never a
+file's Date Modified: using it there would tell Finder the contents of a file somebody renamed had
+changed that afternoon. A declared folder has no row and so shows no date, which is the truth.
+
 ### Where the bytes go
 
 Never through the portal. A download is answered with a `302` into Cloud Storage and an upload PUTs
@@ -340,6 +347,7 @@ The move onto one tree took three more changes, all so a filesystem could be bui
 | `fileProvider.js` | every listing and by-id lookup carries a `permissions` block — `writable`, `renamable`, `movable`, `deletable`. Without it the volume has to guess what to offer, and a guess is a dialog after the user has committed rather than a greyed-out menu item before |
 | `fileProvider.js` | a row directly under the tree's root reports **no** parent, rather than the root row's id. The volume addresses the root as its mount point, and an item that named the row instead would hang off an identifier no listing ever vends |
 | `fileTree.js` | a declared folder is not `renamable`. Every write on one is refused — there is no row to change, and the name comes from the declaration — but the other two were already false for a slug, so this was the one that had to be said |
+| `fileProvider.js`, `fileTree.js` | every row carries `uploadDate` and `modifiedDate` — `created_at` and `updated_at` — on folders as well as files, since a filesystem shows a date against both. `NODE_COLUMNS` carries the instants for the folder half, which is also why `chainOf()`'s recursive union now spells its columns once instead of twice |
 
 ### Why OAuth rather than the session cookie
 

@@ -14,6 +14,15 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     let documentSize: NSNumber?
     let itemVersion: NSFileProviderItemVersion
 
+    /// The two dates Finder shows. Nil where the portal did not say, which is what a portal
+    /// predating them and a folder with no row of its own both amount to.
+    ///
+    /// For a file they are one instant, because a file's bytes are written once and never replaced.
+    /// A folder has no content of its own to date, so what it reports as modified is when the row
+    /// last changed — see `Timestamp`.
+    let creationDate: Date?
+    let contentModificationDate: Date?
+
     #if os(macOS)
     /// Nothing is downloaded until something opens it, and the system may reclaim the bytes of
     /// anything nobody has opened lately. The portal holds tens of gigabytes across every client;
@@ -37,6 +46,7 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
         contentType: UTType,
         capabilities: NSFileProviderItemCapabilities,
         documentSize: NSNumber?,
+        dates: Dates = Dates(),
         version: NSFileProviderItemVersion
     ) {
         self.itemIdentifier = identity.identifier
@@ -45,8 +55,25 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
         self.contentType = contentType
         self.capabilities = capabilities
         self.documentSize = documentSize
+        self.creationDate = Timestamp.date(dates.created)
+        self.contentModificationDate = Timestamp.date(dates.modified)
         self.itemVersion = version
         super.init()
+    }
+
+    /// An item's two instants, as the server spelled them.
+    ///
+    /// Kept together and unparsed until the item is built, because the same pair goes into the
+    /// metadata version — as strings, so that a date the formatters cannot read is still something
+    /// that has changed when it changes.
+    struct Dates {
+        var created: String?
+        var modified: String?
+
+        /// A file's: one instant under both names, since its bytes are as old as its row.
+        static func file(_ remote: RemoteFile) -> Dates {
+            Dates(created: remote.uploadDate, modified: remote.uploadDate)
+        }
     }
 
     // MARK: - Standing
@@ -121,16 +148,21 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
         permissions: Permissions,
         standing: Standing = .live
     ) -> FileProviderItem {
-        FileProviderItem(
+        let dates = Dates(created: remote.uploadDate, modified: remote.modifiedDate)
+        return FileProviderItem(
             identity: .node(id: remote.id),
             parent: container.identifier,
             filename: remote.name,
             contentType: .folder,
             capabilities: capabilities(permissions, folder: true, standing: standing),
             documentSize: nil,
+            dates: dates,
             // A folder's content version is fixed: the portal has no per-folder revision to read,
             // and what drives re-listing is the child enumerator's own sync anchor.
-            version: Self.version(content: "folder", metadata: "\(remote.name)|\(permissions.signature)|\(standing.rawValue)")
+            version: Self.version(
+                content: "folder",
+                metadata: Self.metadata(remote.name, permissions, standing, dates)
+            )
         )
     }
 
@@ -141,18 +173,20 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
         permissions: Permissions,
         standing: Standing = .live
     ) -> FileProviderItem {
-        FileProviderItem(
+        let dates = Dates.file(remote)
+        return FileProviderItem(
             identity: .node(id: remote.id),
             parent: container.identifier,
             filename: remote.filename,
             contentType: contentType(for: remote),
             capabilities: capabilities(permissions, folder: false, standing: standing),
             documentSize: remote.size.map(NSNumber.init(value:)),
+            dates: dates,
             // The content hash. It changes when and only when the bytes do, so a materialised copy
             // stays valid until the file is genuinely replaced.
             version: Self.version(
                 content: remote.version,
-                metadata: "\(remote.filename)|\(permissions.signature)|\(standing.rawValue)"
+                metadata: Self.metadata(remote.filename, permissions, standing, dates)
             )
         )
     }
@@ -183,18 +217,30 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
         let standing: Standing = remote.isTrashed ? .binned : (remote.isCovered ? .covered : .live)
         let permissions = remote.permissions ?? Permissions(assumedFrom: true)
 
+        // A folder is described exactly as the listing above it describes one, which means taking
+        // neither of the two things `/items/:id` offers and `/list` does not: the `id:` version it
+        // synthesises for a row with no content hash, and — where the row is a file's dates read off
+        // a folder — a modified date that means something else. A folder that answered differently
+        // depending on which way the system asked would be reported as changed for having done
+        // nothing at all.
+        let folder = remote.isFolder
+        let dates = folder
+            ? Dates(created: remote.uploadDate, modified: remote.modifiedDate)
+            : Dates.file(remote)
+
         return FileProviderItem(
             identity: identity ?? .node(id: remote.id),
             parent: parent,
             filename: remote.filename,
-            contentType: remote.isFolder ? .folder : contentType(for: remote),
-            capabilities: capabilities(permissions, folder: remote.isFolder, standing: standing),
-            documentSize: remote.isFolder ? nil : remote.size.map(NSNumber.init(value:)),
+            contentType: folder ? .folder : contentType(for: remote),
+            capabilities: capabilities(permissions, folder: folder, standing: standing),
+            documentSize: folder ? nil : remote.size.map(NSNumber.init(value:)),
+            dates: dates,
             // Being thrown away is a metadata change and nothing else — the bytes are untouched, so
             // a materialised copy stays valid through the bin and back out again.
             version: Self.version(
-                content: remote.version,
-                metadata: "\(remote.filename)|\(permissions.signature)|\(standing.rawValue)"
+                content: folder ? "folder" : remote.version,
+                metadata: Self.metadata(remote.filename, permissions, standing, dates)
             )
         )
     }
@@ -251,6 +297,17 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     }
 
     // MARK: - Versions
+
+    /// Everything about an item that is not its bytes, spelled once so that the two ways of building
+    /// one — from the listing above it, and from `/items/:id` — cannot describe it differently.
+    private static func metadata(
+        _ name: String,
+        _ permissions: Permissions,
+        _ standing: Standing,
+        _ dates: Dates
+    ) -> String {
+        "\(name)|\(permissions.signature)|\(standing.rawValue)|\(dates.created ?? "")|\(dates.modified ?? "")"
+    }
 
     /// `NSFileProviderItemVersion` takes opaque data capped at 128 bytes, so both halves are hashed
     /// rather than stored: a folder label is user-entered and has no length limit worth trusting,

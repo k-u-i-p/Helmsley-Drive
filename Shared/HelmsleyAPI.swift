@@ -2,6 +2,33 @@ import Foundation
 
 // MARK: - Wire types
 
+/// The portal's `created_at` and `updated_at`, which reach here as a `timestamptz` serialised into
+/// JSON: ISO 8601 in UTC, with fractional seconds where the instant has them.
+///
+/// `created_at` is when a row was written, and for a file that is also when its content was written
+/// — bytes are never replaced under a row, since a re-upload inserts a new one, which is the same
+/// fact `.allowsWriting` is withheld for. `updated_at` moves on a rename, a move and a trip through
+/// the bin, and on nothing else, so it is what a *folder* last changed and never what a file's
+/// content did.
+enum Timestamp {
+
+    static func date(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        return fractional.date(from: value) ?? whole.date(from: value)
+    }
+
+    // Two, because `ISO8601DateFormatter` matches fractional seconds only when told to and Postgres
+    // omits them on a whole second. Static because this runs for every row of every listing, and the
+    // formatter — unlike `DateFormatter` — is documented as safe to share.
+    private static let fractional: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let whole = ISO8601DateFormatter()
+}
+
 /// What the portal will let this admin do to one row, decided by the row's whole ancestor chain.
 ///
 /// Asked rather than guessed at, because the rules are statements about where a row sits and only
@@ -46,6 +73,11 @@ struct RemoteFile: Codable, Sendable, Equatable {
     let size: Int64?
     let version: String
 
+    /// The row's two instants, as `Timestamp` describes them. Both optional: a portal that predates
+    /// them sends neither, and an item simply has no dates to show.
+    let uploadDate: String?
+    let modifiedDate: String?
+
     /// Which folder holds it, or null for a row directly under the tree's root — which is the mount
     /// point, and is addressed as a container rather than by the root row's own id.
     let parent: String?
@@ -80,6 +112,11 @@ struct RemoteFolder: Codable, Sendable, Equatable {
     let id: String
     let writable: Bool
     let permissions: Permissions?
+
+    /// As on `RemoteFile`, and optional for the same reason — with one more: a folder the portal has
+    /// declared but not yet written has no row, so it has no instants to send and never will.
+    let uploadDate: String?
+    let modifiedDate: String?
 }
 
 struct Listing: Codable, Sendable {
