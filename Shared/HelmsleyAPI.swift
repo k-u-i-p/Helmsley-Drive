@@ -2,41 +2,64 @@ import Foundation
 
 // MARK: - Wire types
 
-/// One document, as `/api/files` describes it. `version` is the content hash: it changes when and
-/// only when the bytes do, which is what the file provider needs and what a date would not give.
+/// What the portal will let this admin do to one row, decided by the row's whole ancestor chain and
+/// answered rather than guessed at.
 ///
-/// `id` is opaque, and has to stay that way. Two trees hang off this one volume — `documents`, and
-/// the admin's own files, which are a different table with its own sequence — so the server marks
-/// which one an id came from and hands the whole thing back as a string. Reading it as a number
-/// silently loses that mark, and every personal item fails to decode at all.
+/// The rules are not simple enough to reproduce here and are not this app's to hold in any case: an
+/// admin's own folder is theirs alone and readable by a super admin who still may not write in it,
+/// `/Orphaned` is a record and so takes nothing at all, and a folder the tree itself placed can be
+/// renamed but never moved or thrown away. Every one of those is a statement about where a row sits
+/// rather than about the row, and the server is the only thing that knows.
+///
+/// So the volume asks. What comes back is turned straight into what Finder offers, which is the
+/// point: an operation the portal would refuse is one the user is never given, rather than one that
+/// fails after they have committed to it.
+struct Permissions: Codable, Sendable, Equatable {
+    /// Whether things can be put *into* this folder — a new file, or a new folder.
+    let writable: Bool
+    let renamable: Bool
+    let movable: Bool
+    let deletable: Bool
+
+    /// What a portal that predates these flags leaves the volume to assume.
+    ///
+    /// Everything the folder's own `writable` allows, which is what this app offered before it could
+    /// ask. Wrong only in the direction of offering something the server then refuses — with its own
+    /// sentence, which Finder shows — rather than hiding something that would have worked.
+    init(assumedFrom writable: Bool) {
+        self.writable = writable
+        self.renamable = writable
+        self.movable = writable
+        self.deletable = writable
+    }
+
+    /// For the snapshot the enumerators diff, so a folder that becomes read-only under somebody is
+    /// re-reported rather than left offering writes it no longer has.
+    var signature: String { "\(writable ? "w" : "-")\(renamable ? "r" : "-")\(movable ? "m" : "-")\(deletable ? "d" : "-")" }
+}
+
+/// One row of the tree, as `/api/files` describes it. `version` is the content hash: it changes when
+/// and only when the bytes do, which is what the file provider needs and what a date would not give.
+///
+/// `id` is opaque, and has to stay that way. It is a serial for a row and a `v<parent>_<type>`
+/// reference for a folder the portal has declared but not yet written, and nothing here may assume
+/// which — reading it as a number loses half of what the tree can name.
 struct RemoteFile: Codable, Sendable, Equatable {
     let id: String
     let filename: String
-    let title: String
-    let type: String?
     let mime: String?
     let size: Int64?
     let version: String
     let uploadDate: String?
 
-    // The three the file trees answer and a document never does — a document has no parent to
-    // report, appearing as it does in every folder whose filter matches it, and it is never a folder
-    // and never in a bin. Optional so that a listing from a portal that predates the trash still
-    // decodes; `isFolder` and `isTrashed` read a missing value as false, which is what it meant.
+    /// Which folder holds it, or null for a row directly under the tree's root — which is the mount
+    /// point, and is addressed as a container rather than by the root row's own id.
     let parent: String?
+
+    /// Optional so that a listing from a portal that predates the trash still decodes; both read a
+    /// missing value as false, which is what it meant.
     let isDir: Bool?
     let trashed: Bool?
-
-    /// Which mount this row hangs from, as that mount's own segment — the only thing about a row
-    /// that says which of the two file trees it is in.
-    ///
-    /// Needed exactly where `parent` is null, meaning the row sits at the top of its tree: the mount
-    /// is addressed by path, and with two of them the null alone no longer says which path.
-    /// Null for a document, which hangs from no mount, and absent from a portal that predates the
-    /// shared folder — where My Files was the only answer, which is what `mountSegment` falls back to.
-    let root: String?
-
-    var mountSegment: String { root ?? ItemIdentity.myFiles }
 
     /// Whether something *above* this row was thrown away, which `/items/:id` answers and a listing
     /// does not need to: a listing learns it once, from the folder it asked for.
@@ -47,39 +70,53 @@ struct RemoteFile: Codable, Sendable, Equatable {
     /// under a trashed folder and answers a restore of one by doing nothing at all.
     let covered: Bool?
 
+    /// Absent from a portal that predates the flags, which is what `Permissions(assumedFrom:)` is for.
+    let permissions: Permissions?
+
     var isFolder: Bool { isDir == true }
     var isTrashed: Bool { trashed == true }
     var isCovered: Bool { covered == true }
 }
 
-/// One subfolder. `segment` is what goes back in a path; `name` is what a person reads. They differ
-/// wherever the tree fans out over rows — a client's folder is segmented by id and named by the
-/// client — so both are kept, and renaming a client in the portal never invalidates a stored path.
+/// One subfolder. `segment` is what goes back in a path and `id` is what addresses it on its own;
+/// they are the same string for a row and differ only for a declared folder, which has no row to be
+/// addressed by and so carries its parent in the id.
+///
+/// `name` is separate from both because a folder is *labelled* rather than named: renaming a client
+/// in the portal renames their folder, and nothing anybody holds stops resolving.
 struct RemoteFolder: Codable, Sendable, Equatable {
     let segment: String
     let name: String
+    let id: String
     let writable: Bool
-
-    /// Null outside the admin's own tree, whose folders are rows and so have an identity apart from
-    /// where they sit. Carried by the server rather than spelled from the segment: how an id marks
-    /// which table it came from is not something this app should have to know.
-    let id: String?
+    let permissions: Permissions?
 }
 
 struct Listing: Codable, Sendable {
     let folders: [RemoteFolder]
     let files: [RemoteFile]
+
+    /// The listed folder's own standing, which is what the files inside it inherit: a file's rules
+    /// are its folder's, since the two share every ancestor that decides them.
     let writable: Bool
-    let accept: [String]
+    let permissions: Permissions?
 
     /// Whether the folder listed is in the bin — itself thrown away, or under something that was.
     ///
-    /// Not inferable from `writable`, which is false all over the classified tree for folders that
-    /// are simply read-only. Optional so that a listing from a portal that predates a browsable bin
-    /// still decodes, and read as false, which is what it meant.
+    /// Not inferable from `writable`, which is false wherever a folder is merely read-only.
+    /// Optional so that a listing from a portal that predates a browsable bin still decodes, and
+    /// read as false, which is what it meant.
     let trashed: Bool?
 
     var isTrashed: Bool { trashed == true }
+
+    /// What to credit a *file* in this folder with when the portal did not say.
+    ///
+    /// Taken from whether the folder can be written to rather than from the folder's own flags: a
+    /// file is never one of the folders the tree placed, so it may be moved and thrown away wherever
+    /// its folder can be changed at all — which is not true of the folder itself, and reading its
+    /// answer here would hide a perfectly ordinary drag out of `/Shared`.
+    var assumedForFiles: Permissions { Permissions(assumedFrom: writable) }
 }
 
 struct Admin: Codable, Sendable {
@@ -127,18 +164,15 @@ struct HelmsleyAPI: Sendable {
 
     // MARK: Reads
 
-    /// One directory, named either by the path the classified tree is addressed by or by the id of a
-    /// folder in the admin's own.
-    ///
-    /// Repeated `path`, in order — the same shape the dashboard's own /browse takes, and the reason
-    /// a segment may safely contain a slash or a space.
+    /// One directory, named by the id of the folder or — for the top of the tree, which has no id
+    /// the volume can use — by the empty path.
     func list(_ destination: Destination) async throws -> Listing {
         var components = URLComponents(url: base.appendingPathComponent("list"), resolvingAgainstBaseURL: false)!
         components.queryItems = destination.query
         return try await get(components.url!)
     }
 
-    /// One item of the admin's own tree, which is the only lookup that answers for a directory and
+    /// One row by id, which is the only lookup that answers for a directory as well as a file and
     /// the only one that says where the item sits and whether it is in the bin.
     func item(id: String) async throws -> RemoteFile {
         struct Wrapper: Decodable { let item: RemoteFile }
@@ -154,22 +188,16 @@ struct HelmsleyAPI: Sendable {
         return wrapper.items
     }
 
-    func document(id: String) async throws -> RemoteFile {
-        struct Wrapper: Decodable { let file: RemoteFile }
-        let wrapper: Wrapper = try await get(documentURL(id))
-        return wrapper.file
-    }
-
     func whoami() async throws -> Admin {
         struct Wrapper: Decodable { let admin: Admin }
         let wrapper: Wrapper = try await get(base.appendingPathComponent("whoami"))
         return wrapper.admin
     }
 
-    /// Downloads a document's bytes to a temporary file, which the caller owns and must move or
-    /// delete. Streamed to disk rather than held in memory: documents run to hundreds of megabytes,
-    /// and the portal never sees them at all — the request is answered with a redirect into Cloud
-    /// Storage, so the transfer is between this device and the bucket.
+    /// Downloads a file's bytes to a temporary file, which the caller owns and must move or delete.
+    /// Streamed to disk rather than held in memory: files run to hundreds of megabytes, and the
+    /// portal never sees them at all — the request is answered with a redirect into Cloud Storage,
+    /// so the transfer is between this device and the bucket.
     ///
     /// `reporting` is the progress the file provider handed back to the system. The transfer's own
     /// progress is attached to it as a child, which both drives the percentage the user watches and
@@ -185,14 +213,14 @@ struct HelmsleyAPI: Sendable {
         }
         guard (200..<300).contains(http.statusCode) else {
             try? FileManager.default.removeItem(at: url)
-            throw APIError.http(status: http.statusCode, message: "Could not download document \(id).")
+            throw APIError.http(status: http.statusCode, message: "Could not download file \(id).")
         }
         return url
     }
 
     // MARK: Writes
 
-    /// Files a new document into `path`, in the three steps the portal's upload has always taken:
+    /// Files a new file into `destination`, in the three steps the portal's upload has always taken:
     /// a ticket, a PUT straight to Cloud Storage, then a finalise that writes the row.
     ///
     /// The bytes never pass through the portal — App Engine caps a request at 32MB — so the middle
@@ -239,14 +267,14 @@ struct HelmsleyAPI: Sendable {
         _ = try await send(request) as Empty
     }
 
-    // MARK: The admin's own folder
+    // MARK: Structure
 
-    // Making a directory, renaming and moving exist only for this one branch of the tree. Everywhere
-    // else a folder is a filter over `documents` and a file is a row with no path — nothing there to
-    // create, nothing to move along. The server refuses the rest by name, and so does the extension,
-    // before Finder offers an operation that could never have reached anything.
+    // Making a directory, renaming and moving are the whole tree's now, not one branch's — every
+    // folder in it is a row, and where a row may be changed is the server's answer rather than a
+    // shape this app can read off a path. What it answers arrives as `Permissions`, and the
+    // extension offers exactly what it says.
 
-    /// Makes a directory in the admin's own folder.
+    /// Makes a directory in `destination`.
     ///
     /// A name already in use is numbered rather than refused — which is what a filesystem does — so
     /// the folder to show is the one that comes back, not the one that was asked for.
@@ -270,8 +298,8 @@ struct HelmsleyAPI: Sendable {
         return wrapper.name
     }
 
-    /// Moves one item into the folder at `path`, and answers the name it landed under — which is not
-    /// always the name it left with, since a collision in the target is numbered rather than refused.
+    /// Moves one item into `destination`, and answers the name it landed under — which is not always
+    /// the name it left with, since a collision in the target is numbered rather than refused.
     @discardableResult
     func move(id: String, to destination: Destination) async throws -> String {
         struct Wrapper: Decodable { let name: String }
@@ -334,6 +362,10 @@ struct HelmsleyAPI: Sendable {
 
     // Both take the id as a path component rather than interpolating it into one. An identifier is
     // whatever the server chose to make it, so it is escaped rather than trusted to be URL-safe.
+
+    /// The bytes, and the permanent delete. Still spelled `documents` on the server, from when this
+    /// volume served the document table — the route is the route, and renaming it would break every
+    /// build of this app already installed.
     private func documentURL(_ id: String) -> URL {
         base.appendingPathComponent("documents").appendingPathComponent(id)
     }

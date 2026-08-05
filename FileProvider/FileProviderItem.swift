@@ -3,8 +3,7 @@ import FileProvider
 import Foundation
 import UniformTypeIdentifiers
 
-/// One entry in the mounted volume — a folder of the portal's document tree, or a document listed
-/// in one.
+/// One entry in the mounted volume — a folder of the portal's tree, or a file in one.
 final class FileProviderItem: NSObject, NSFileProviderItem {
 
     let itemIdentifier: NSFileProviderItemIdentifier
@@ -63,8 +62,11 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     ///
     /// What is left inside is reading and purging, and both are real: bytes are still fetched by id,
     /// and a delete still takes the row and everything under it.
+    ///
+    /// Kept apart from `Permissions`, which the server answers and which says nothing about the bin:
+    /// the rules there are about where a row *sits*, and a row in the trash sits where it always did.
     enum Standing {
-        /// In the tree, where everything this volume can do is allowed.
+        /// In the tree, where everything the portal allows this row is allowed.
         case live
         /// The top of something thrown away: listed by the bin, put back or purged from there.
         case binned
@@ -88,9 +90,9 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
     /// can act on and something the log can record.
     var isNameable: Bool { !filename.isEmpty }
 
-    // MARK: - Folders
+    // MARK: - The mount point
 
-    /// The mount point. Named for the portal rather than for the domain so the sidebar entry and
+    /// The top of the tree. Named for the portal rather than for the domain so the sidebar entry and
     /// the folder agree.
     static var root: FileProviderItem {
         FileProviderItem(
@@ -98,150 +100,147 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
             parent: .rootContainer,
             filename: Configuration.domainDisplayName,
             contentType: .folder,
-            // Read-only at the top: the root of the tree holds no documents of its own, and every
-            // folder below it is part of a fixed structure the portal defines. Nothing here can
-            // create one, which is why `.allowsAddingSubItems` is absent.
+            // Read-only at the top, which is stricter than the portal is: the server would take a
+            // new folder here, but the tree's top level is its skeleton — Clients, Properties,
+            // Loans, Shared, Orphaned and the staff folders — and something dragged in beside them
+            // would be neither. Everything the volume is for happens a level down.
             capabilities: [.allowsReading, .allowsContentEnumerating],
             documentSize: nil,
             version: Self.version(content: "root", metadata: "root")
         )
     }
 
+    // MARK: - As a folder listed them
+
     /// A subfolder, as the folder `container` listed it.
     ///
-    /// A folder in one of the file trees carries an id and is identified by it; everywhere else a
-    /// folder is a filter the directory spec defines, which has no identity apart from where it sits
-    /// and so keeps its path. A mount itself falls in the second group — it is listed by the
-    /// classified tree above it, which has no ids to give.
-    static func folder(in container: ItemIdentity, remote: RemoteFolder, standing: Standing = .live) -> FileProviderItem {
-        let identity = remote.id.map(ItemIdentity.fileRow(id:))
-            ?? .folder(path: container.path + [remote.segment])
-
-        var capabilities: NSFileProviderItemCapabilities = [.allowsReading, .allowsContentEnumerating]
-        switch standing {
-        case .live:
-            // Exactly the folders the portal's own tree marks as taking uploads. A drop anywhere
-            // else is refused by Finder before a byte moves, rather than by the server after all of
-            // them.
-            //
-            // A file tree is added by identity rather than by the flag, because the flag is false
-            // for a mount seen from the level above it: what a drop there would write is a directory
-            // row, which only walking into the mount resolves, so the listing that names it has
-            // nothing to report. Walk in and the same folder says it is writable — and it is.
-            if remote.writable || identity.isFileTree { capabilities.insert(.allowsAddingSubItems) }
-            // Structural writes, only where a folder is a row someone made. Everywhere else a folder
-            // is a filter over `documents` that the spec defines, with nothing to rename or move.
-            if identity.fileRowID != nil {
-                capabilities.formUnion([.allowsRenaming, .allowsReparenting, .allowsDeleting, .allowsTrashing])
-            }
-        case .binned, .covered:
-            // A folder listed out of the bin. Open it and purge it — nothing else reaches inside a
-            // thrown-away subtree, and the bin's own top level is listed by BinEnumerator rather
-            // than by this, so what arrives here is always something further in.
-            capabilities.insert(.allowsDeleting)
-        }
-
-        return FileProviderItem(
-            identity: identity,
+    /// `permissions` is the server's answer for this folder, which is the only thing that decides
+    /// what Finder offers on it: a folder the tree placed can be renamed but never moved or thrown
+    /// away, one under `/Orphaned` takes nothing at all, and neither is anything a name or a depth
+    /// could be read off.
+    static func folder(
+        in container: ItemIdentity,
+        remote: RemoteFolder,
+        permissions: Permissions,
+        standing: Standing = .live
+    ) -> FileProviderItem {
+        FileProviderItem(
+            identity: .node(id: remote.id),
             parent: container.identifier,
             filename: remote.name,
             contentType: .folder,
-            capabilities: capabilities,
+            capabilities: capabilities(permissions, folder: true, standing: standing),
             documentSize: nil,
             // A folder's content version is fixed: the portal has no per-folder revision to read,
             // and what actually drives re-listing is the enumerator's sync anchor, which is
             // computed from the listing itself (FolderEnumerator).
-            version: Self.version(content: "folder", metadata: "\(remote.name)|\(remote.writable)")
+            version: Self.version(content: "folder", metadata: "\(remote.name)|\(permissions.signature)")
         )
     }
 
-    // MARK: - Files
-
     /// A file, as the folder `container` listed it.
-    static func file(in container: ItemIdentity, remote: RemoteFile, standing: Standing = .live) -> FileProviderItem {
-        let identity: ItemIdentity = container.isFileTree
-            ? .fileRow(id: remote.id)
-            : .file(path: container.path, documentID: remote.id)
-
-        return FileProviderItem(
-            identity: identity,
+    static func file(
+        in container: ItemIdentity,
+        remote: RemoteFile,
+        permissions: Permissions,
+        standing: Standing = .live
+    ) -> FileProviderItem {
+        FileProviderItem(
+            identity: .node(id: remote.id),
             parent: container.identifier,
             filename: remote.filename,
             contentType: contentType(for: remote),
-            capabilities: capabilities(forFileRow: identity.isFileTree, folder: false, standing: standing),
+            capabilities: capabilities(permissions, folder: false, standing: standing),
             documentSize: remote.size.map(NSNumber.init(value:)),
             // The content hash. It changes when and only when the bytes do, so a materialised copy
-            // stays valid until the document is genuinely replaced.
-            version: Self.version(content: remote.version, metadata: remote.filename)
+            // stays valid until the file is genuinely replaced.
+            version: Self.version(content: remote.version, metadata: "\(remote.filename)|\(permissions.signature)")
         )
     }
 
-    // MARK: - Items of the file trees
+    // MARK: - As the server describes one on its own
 
-    /// A row of one of the file trees, built from what the server says about it rather than from
-    /// where it was found — which is the only way to build one that is in the bin, since nothing is
-    /// listing it from a folder.
-    static func fileRow(_ remote: RemoteFile) -> FileProviderItem {
+    /// One row, built from what the server says about it rather than from where it was found — which
+    /// is the only way to build one that is in the bin, since nothing is listing it from a folder.
+    ///
+    /// `as` is the identifier to answer under, for the one case where it is not the row's own: a
+    /// declared folder that has since been materialised resolves by the reference Finder is still
+    /// holding, and answers with the row that replaced it. Handing back the row's new identifier
+    /// would be answering a question about one item with another. The listing above it vends the new
+    /// one, the diff retires the old, and the system is never told two things at once.
+    static func item(_ remote: RemoteFile, as identity: ItemIdentity? = nil) -> FileProviderItem {
         // Trashed items hang under the trash rather than under the folder they came from. The row
         // still records that folder — which is what puts them back — but a system that enumerated
         // them in both places would show one item twice.
         //
-        // No parent means the row sits at the top of its tree, under the mount itself — and which
-        // mount is the row's to say, since My Files and Shared both answer here.
+        // No parent means the row sits directly under the tree's root, which the volume addresses as
+        // its mount point rather than by the root row's own id.
         let parent: NSFileProviderItemIdentifier = remote.isTrashed
             ? .trashContainer
-            : remote.parent.map { ItemIdentity.fileRow(id: $0).identifier }
-                ?? ItemIdentity.mount(remote.mountSegment).identifier
+            : remote.parent.map { ItemIdentity.node(id: $0).identifier } ?? .rootContainer
+
+        // Trashed first: a row cannot be both, and the mark is only ever on the top of what was
+        // thrown away — so anything the server calls covered is by definition below one.
+        let standing: Standing = remote.isTrashed ? .binned : (remote.isCovered ? .covered : .live)
+        let permissions = remote.permissions ?? Permissions(assumedFrom: true)
 
         return FileProviderItem(
-            identity: .fileRow(id: remote.id),
+            identity: identity ?? .node(id: remote.id),
             parent: parent,
             filename: remote.filename,
             contentType: remote.isFolder ? .folder : contentType(for: remote),
-            // Trashed first: a row cannot be both, and the mark is only ever on the top of what was
-            // thrown away — so anything the server calls covered is by definition below one.
-            capabilities: capabilities(
-                forFileRow: true,
-                folder: remote.isFolder,
-                standing: remote.isTrashed ? .binned : (remote.isCovered ? .covered : .live)
-            ),
+            capabilities: capabilities(permissions, folder: remote.isFolder, standing: standing),
             documentSize: remote.isFolder ? nil : remote.size.map(NSNumber.init(value:)),
             // Being thrown away is a metadata change and nothing else — the bytes are untouched, so
             // a materialised copy stays valid through the bin and back out again.
-            version: Self.version(content: remote.version, metadata: "\(remote.filename)|\(remote.isTrashed)")
+            version: Self.version(
+                content: remote.version,
+                metadata: "\(remote.filename)|\(remote.isTrashed)|\(permissions.signature)"
+            )
         )
     }
 
-    /// What may be done to an item, which comes down to which tree it is in and whether it is
-    /// already in the bin.
+    // MARK: - Capabilities
+
+    /// What may be done to an item: what the portal allows it, narrowed by where it stands in
+    /// relation to the bin.
     ///
-    /// No `.allowsWriting` on either kind of tree: nothing replaces a file's bytes in place. A
-    /// document's are the filing an admin chose, and a file row is stored under a key derived from
-    /// its content hash, so different bytes are a different row rather than an edit to this one.
-    /// Offering it would mean accepting a save in Finder that quietly never reached the server.
+    /// The two are asked separately because they are separate questions. `Permissions` is the
+    /// server's rule about where the row sits in the tree — whose folder it is under, whether the
+    /// tree itself placed it — and it says the same thing about a row in the bin as it did the
+    /// moment before, since throwing something away does not move it. What being in the bin costs is
+    /// added here.
     ///
-    /// A document has no name of its own to change and no path to move along — its title and its
-    /// links are the filing, and the portal refuses to refile some of them at all. A file row is the
-    /// opposite: its name is a filename someone typed, and it got where it is because they put it
-    /// there.
+    /// No `.allowsWriting` anywhere. Nothing replaces a file's bytes in place: a row is stored under
+    /// a key derived from its content hash, so different bytes are a different row rather than an
+    /// edit to this one. Offering it would mean accepting a save in Finder that quietly never
+    /// reached the server.
     ///
-    /// In the bin, all that is left is reading it, putting it back — which is a reparent, hence
+    /// In the bin, what is left is reading it, putting it back — which is a reparent, hence
     /// `.allowsReparenting` — and purging it. Renaming and refiling are refused by the server while
     /// something is trashed, so they are not offered here either. A step further in, under a folder
     /// that was thrown away, even putting back goes: it is the folder above that carries the mark.
-    private static func capabilities(forFileRow row: Bool, folder: Bool, standing: Standing) -> NSFileProviderItemCapabilities {
-        var capabilities: NSFileProviderItemCapabilities = [.allowsReading, .allowsDeleting]
+    private static func capabilities(
+        _ permissions: Permissions,
+        folder: Bool,
+        standing: Standing
+    ) -> NSFileProviderItemCapabilities {
+        var capabilities: NSFileProviderItemCapabilities = [.allowsReading]
         if folder { capabilities.insert(.allowsContentEnumerating) }
-        guard row else { return capabilities }
 
         switch standing {
         case .live:
-            capabilities.formUnion([.allowsRenaming, .allowsReparenting, .allowsTrashing])
-            if folder { capabilities.insert(.allowsAddingSubItems) }
+            if folder && permissions.writable { capabilities.insert(.allowsAddingSubItems) }
+            if permissions.renamable { capabilities.insert(.allowsRenaming) }
+            if permissions.movable { capabilities.insert(.allowsReparenting) }
+            // Both are the server's `deletable`, because both are what it checks: a Finder delete
+            // arrives as a reparent into the bin, and Delete Immediately as this.
+            if permissions.deletable { capabilities.formUnion([.allowsTrashing, .allowsDeleting]) }
         case .binned:
-            capabilities.insert(.allowsReparenting)
+            if permissions.movable { capabilities.insert(.allowsReparenting) }
+            if permissions.deletable { capabilities.insert(.allowsDeleting) }
         case .covered:
-            break
+            if permissions.deletable { capabilities.insert(.allowsDeleting) }
         }
         return capabilities
     }

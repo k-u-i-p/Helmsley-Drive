@@ -3,247 +3,130 @@ import Foundation
 
 /// What an `NSFileProviderItemIdentifier` means here.
 ///
-/// The volume mounts two trees that disagree about what a file is, and the encoding has to serve
-/// both.
+/// One tree, so one namespace. The portal keeps its files in a single table: a folder is a row, a
+/// file is a row, and the row's id is the whole of what identifies either. So everything below the
+/// mount point is addressed by that id and by nothing else — which is exactly what makes a move, a
+/// rename or a trip through the bin leave the identity alone. None of the three touches the id, and
+/// an identifier built from where a thing sits would call every one of them a different item.
 ///
-/// The portal's document tree is a set of views over one table, not a hierarchy of stored paths: a
-/// row has no path of its own and appears in every folder whose filter matches it. A filesystem
-/// insists on the opposite — one item, one parent — so a document's identity here is *the document
-/// seen from a particular folder*, and one listed in two folders is two items with the same bytes.
-/// That is the honest translation: each is exactly the file that folder shows, deleting either
-/// deletes the document, and nothing has to invent a canonical home the portal does not have.
+/// The mount point is the one exception, because the framework fixes its identifier as
+/// `.rootContainer` and the tree's own root row has no say in it. It is addressed instead by the
+/// empty path, which is what `/api/files/list` answers for with the top of the tree — and it is why
+/// a row directly under the root reports no parent at all rather than the root row's id: there is
+/// one root container, and two names for it would be two folders.
 ///
-/// The file trees — the admin's own folder, and the office's shared one — are a real filesystem, and
-/// a path is exactly the wrong thing to identify something in one. A row there sits in one directory
-/// and can be moved to another, or thrown away and put back — and if the path were part of the
-/// identifier, every one of those would change what the system thinks the item *is*. So those are
-/// identified by the id the server gave them and nothing else, which no move or trashing touches.
-///
-/// There are two of those trees and one kind of identity for both. They are one table on the server,
-/// so an id names a row in either without saying which — and nothing here needs to be told, since
-/// every question about where a row sits is the server's to answer anyway.
+/// A folder the portal has declared but not yet written — a client's Compliance, say, standing empty
+/// until something is filed in it — has no row and so no id of its own. The server gives it one
+/// anyway (`v<parent>_<type>`), and that reference is as opaque here as a serial is: it is a string
+/// the server answers to, it stops being minted the moment the folder is materialised, and the one
+/// Finder is still holding goes on resolving to the row that replaced it.
 ///
 /// Identifiers are opaque to the system but persist across launches and across reboots, so the
 /// encoding below has to stay stable: a change to it orphans everything already synced.
+///
+/// Which is what the change of prefix is *for*. Identifiers minted before the portal's two trees
+/// became one name rows in tables this volume no longer reads, and their ids mean nothing here — a
+/// document id is a small serial, and small serials exist in the new table too, belonging to
+/// something else entirely. Resolving one would hand back the wrong file's bytes under a name
+/// somebody trusted. So the old prefixes are not decoded at all: they fail, the system drops what it
+/// was holding, and the volume enumerates itself again from the root. Once.
 enum ItemIdentity: Equatable {
 
-    /// The mount point itself.
+    /// The mount point itself, and the only thing here not named by an id.
     case root
 
-    /// A folder, addressed by the ordered path segments `/api/files/list` takes.
-    case folder(path: [String])
-
-    /// A document as listed in `path`.
+    /// A row of the tree — a file or a folder, in the bin or not — addressed by its id alone.
     ///
-    /// The id is the server's, verbatim and unparsed. It says which of the two tables the item came
-    /// from as well as which row, so anything that takes it apart — reading it as a number, most of
-    /// all — throws away half of what identifies the item.
-    case file(path: [String], documentID: String)
-
-    /// A row in one of the file trees — a file or a directory, in the bin or not — addressed by its
-    /// id alone.
-    ///
-    /// Neither its parent nor which tree it is in is encoded here, because neither is fixed: a row
-    /// can be dragged between My Files and Shared, and both answers change together. Where it sits
-    /// is something only the server can say, and `/api/files/items/:id` is what says it.
-    case fileRow(id: String)
+    /// Where it sits is not encoded, because where it sits changes: dragging a folder somewhere else
+    /// moves everything under it, and every one of those rows keeps the identity it had. Only the
+    /// server can say where a row is now, and `/api/files/items/:id` is what says it.
+    case node(id: String)
 
     // MARK: - Encoding
 
-    // A single character prefix and a base64url payload, rather than a delimiter-joined path: a
-    // segment may legitimately contain any character a client name or folder label contains, and a
-    // separator that must never appear in the data is a bug waiting for the first client called
-    // "Smith / Jones". An id is encoded the same way for the same reason — it is opaque, so nothing
-    // here may assume which characters it will not contain.
-    // The letters are wire format — they are in every identifier the system has stored — so a
-    // constant may be renamed here but its value never. "P." is the file-row prefix for the reason
-    // the case was once called personal: My Files was the only such tree when it was minted.
-    private static let folderPrefix = "D."
-    private static let filePrefix = "F."
-    private static let fileRowPrefix = "P."
-
-    /// The mounts' own segments, from the portal's directory spec.
-    ///
-    /// Everything below one of these folders is a row and is identified by id; everything else is a
-    /// view over `documents` and is identified by path. Literals rather than something read off a
-    /// listing because the listing does not say which tree a folder belongs to — and the segments are
-    /// stable by the same contract every entity folder relies on, a folder being *labelled* rather
-    /// than named, so that renaming the admin behind My Files breaks no held path.
-    static let myFiles = "My Files"
-    static let shared = "Shared"
-    static let fileMounts = [myFiles, shared]
-
-    /// A mount folder itself, which is the one part of a file tree still addressed by path: it is
-    /// where the two kinds of tree meet, and the classified half above it has no ids at all.
-    static func mount(_ segment: String) -> ItemIdentity { .folder(path: [segment]) }
+    // A prefix and the id verbatim. The id is opaque — it is a serial today and a `v` reference for
+    // a declared folder — but nothing has to be parsed back out of it, so there is nothing here that
+    // can be confused by whatever the server chooses to mint next: the prefix comes off, and the
+    // rest is the id.
+    //
+    // The letters are wire format. They are in every identifier the system has stored, so a constant
+    // may be renamed here but its value never — and a letter that has meant something else before
+    // may never be reused, which is why this one is neither D., F. nor P.
+    private static let nodePrefix = "N."
 
     var identifier: NSFileProviderItemIdentifier {
         switch self {
         case .root:
             return .rootContainer
-        case .folder(let path):
-            return NSFileProviderItemIdentifier(Self.folderPrefix + Self.encode(path))
-        case .file(let path, let documentID):
-            return NSFileProviderItemIdentifier(Self.filePrefix + Self.encode(path + [documentID]))
-        case .fileRow(let id):
-            return NSFileProviderItemIdentifier(Self.fileRowPrefix + Self.encode([id]))
+        case .node(let id):
+            return NSFileProviderItemIdentifier(Self.nodePrefix + id)
         }
     }
 
     init?(_ identifier: NSFileProviderItemIdentifier) {
-        let raw = identifier.rawValue
         if identifier == .rootContainer {
             self = .root
-        } else if raw.hasPrefix(Self.fileRowPrefix) {
-            guard let parts = Self.decode(String(raw.dropFirst(Self.fileRowPrefix.count))),
-                  let id = parts.first else { return nil }
-            self = .fileRow(id: id)
-        } else if raw.hasPrefix(Self.folderPrefix) {
-            guard let path = Self.decode(String(raw.dropFirst(Self.folderPrefix.count))) else { return nil }
-            self = path.isEmpty ? .root : .folder(path: path)
-        } else if raw.hasPrefix(Self.filePrefix) {
-            // The last segment is the id and the rest is the path. Nothing is parsed out of the id:
-            // an identifier minted before the file trees existed is a bare number and one minted
-            // since may not be, and both are just the string the server answers to.
-            guard var parts = Self.decode(String(raw.dropFirst(Self.filePrefix.count))),
-                  let documentID = parts.popLast() else { return nil }
-            self = .file(path: parts, documentID: documentID)
-        } else {
-            return nil
+            return
         }
-    }
-
-    private static func encode(_ path: [String]) -> String {
-        let data = (try? JSONEncoder().encode(path)) ?? Data("[]".utf8)
-        return data.base64URLEncodedString()
-    }
-
-    private static func decode(_ encoded: String) -> [String]? {
-        var padded = encoded.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
-        padded += String(repeating: "=", count: (4 - padded.count % 4) % 4)
-        guard let data = Data(base64Encoded: padded) else { return nil }
-        return try? JSONDecoder().decode([String].self, from: data)
+        let raw = identifier.rawValue
+        guard raw.hasPrefix(Self.nodePrefix) else { return nil }
+        let id = String(raw.dropFirst(Self.nodePrefix.count))
+        guard !id.isEmpty else { return nil }
+        self = .node(id: id)
     }
 
     // MARK: - Navigation
 
-    /// The path this identity lists from — a folder's own path, and for a document the folder it was
-    /// seen in. Empty for a file row, which has no path and is not addressed by one.
-    var path: [String] {
-        switch self {
-        case .root: return []
-        case .folder(let path): return path
-        case .file(let path, _): return path
-        case .fileRow: return []
-        }
-    }
-
     /// Where a read or a write aimed at this identity should be sent.
     var destination: Destination {
-        if case .fileRow(let id) = self { return .item(id) }
-        return .path(path)
-    }
-
-    /// The container an item hangs under. A document's parent is the folder that listed it; a
-    /// folder's is the folder above; the root's is itself, which is what the framework expects.
-    ///
-    /// Nil for a file row, and deliberately so: where one sits is the server's to say, changes under
-    /// it, and is carried on the item itself rather than derived from its name.
-    var parentIdentifier: NSFileProviderItemIdentifier? {
         switch self {
-        case .root:
-            return .rootContainer
-        case .folder(let path):
-            return path.count <= 1 ? .rootContainer : ItemIdentity.folder(path: path.dropLast()).identifier
-        case .file(let path, _):
-            return path.isEmpty ? .rootContainer : ItemIdentity.folder(path: path).identifier
-        case .fileRow:
-            return nil
+        case .root: return .root
+        case .node(let id): return .item(id)
         }
     }
 
-    // MARK: - The file trees
-
-    /// Whether this identity is in one of the file trees — a mount itself, or anything under it.
-    ///
-    /// Which of the two is not asked, here or anywhere: they behave identically, and every write
-    /// either offers is offered by both.
-    var isFileTree: Bool {
-        if case .fileRow = self { return true }
-        return path.first.map(Self.fileMounts.contains) ?? false
-    }
-
-    /// The id the item endpoints take, or nil for something they would refuse.
-    ///
-    /// The second half of this is the bridge for identifiers minted before file rows were addressed
-    /// by id. Those carry a path, and a folder's last segment is its row id with the marker naming
-    /// its table left off — so it is put back on here, and only here. Anything the system has
-    /// enumerated since arrives as `.fileRow` and needs none of it.
-    ///
-    /// Nil for a mount folder itself, which has no id of its own: it is a node of the directory spec
-    /// above, labelled with the admin's name or simply "Shared".
-    var fileRowID: String? {
-        switch self {
-        case .fileRow(let id):
-            return id
-        case .file(_, let documentID) where isFileTree:
-            return documentID
-        case .folder(let path) where isFileTree:
-            return path.count > 1 ? "af" + path[path.count - 1] : nil
-        default:
-            return nil
-        }
-    }
-
-    /// The same item under the identifier it would be given today.
-    ///
-    /// A one-time step for anything the system still holds by path: the identifier changes once, the
-    /// folder re-syncs, and nothing does it again. Everything already addressed by id is returned
-    /// unchanged, which is the whole reason a move or a trip through the bin no longer disturbs it.
-    var asFileRow: ItemIdentity {
-        guard let id = fileRowID else { return self }
-        return .fileRow(id: id)
-    }
-
-    /// What `DELETE /api/files/documents/:id` would take for this item, or nil where there is
-    /// nothing a delete could remove. Every file is deletable — that has always been true of a
-    /// document and is true of a file row — and among folders, only the ones someone made.
-    var deletableID: String? {
-        if case .file(_, let documentID) = self { return documentID }
-        return fileRowID
+    /// The id the item endpoints take, or nil for the mount point, which is not a row and has none.
+    var nodeID: String? {
+        if case .node(let id) = self { return id }
+        return nil
     }
 }
 
 /// Where a read or a write is aimed.
 ///
-/// The classified tree has only paths — a folder there is a filter, not a row, and there is nothing
-/// else to call it by. The file trees have ids, and those are what survive the folder being moved or
-/// thrown away. The server takes either and resolves both to the same directory, so nothing above
-/// this has to care which tree it is talking to.
+/// Two shapes because the tree has two kinds of address, not because it has two trees: everything is
+/// a row and carries an id, except the top, which is what the empty path means. The server takes
+/// either and resolves both to the same directory.
 enum Destination: Sendable, Equatable {
-    case path([String])
+    case root
     case item(String)
 
     /// The request body fields that name it, ready to be merged into a payload.
+    ///
+    /// The root sends an empty path rather than nothing at all. A restore reads the presence of
+    /// either field as "the caller said where this should land" — so an absent one would mean back
+    /// where it came from, and putting something back at the top of the tree would quietly become
+    /// something else.
     var body: [String: Any] {
         switch self {
-        case .path(let path): return ["path": path]
+        case .root: return ["path": [String]()]
         case .item(let id): return ["parent": id]
         }
     }
 
-    /// The same, as query items for the reads.
+    /// The same, as query items for the reads. Nothing at all for the root: no `path` is what the
+    /// server walks from the top for.
     var query: [URLQueryItem] {
         switch self {
-        case .path(let path): return path.map { URLQueryItem(name: "path", value: $0) }
+        case .root: return []
         case .item(let id): return [URLQueryItem(name: "item", value: id)]
         }
     }
 
-    /// For the log, which wants something short and has no business printing a whole tree.
+    /// For the log, which wants something short.
     var logDescription: String {
         switch self {
-        case .path(let path): return path.logPath
+        case .root: return "/"
         case .item(let id): return id
         }
     }

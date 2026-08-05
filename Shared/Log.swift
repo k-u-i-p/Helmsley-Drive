@@ -21,9 +21,3 @@ enum Log {
     static let provider = Logger(subsystem: subsystem, category: "provider")
     static let enumeration = Logger(subsystem: subsystem, category: "enumeration")
 }
-
-extension Array where Element == String {
-    /// A path as it reads in a log line. The root is a folder too, and "/" says so where an empty
-    /// string would look like a missing value.
-    var logPath: String { isEmpty ? "/" : "/" + joined(separator: "/") }
-}

@@ -13,16 +13,16 @@ private func nameable(_ item: FileProviderItem, in container: String) -> Bool {
     return false
 }
 
-/// Lists one folder of the portal's document tree, and answers what has changed in it since a
-/// given sync anchor.
+/// Lists one folder of the portal's tree, and answers what has changed in it since a given sync
+/// anchor.
 ///
-/// The portal has no change feed — `documents` records an upload date and nothing else — so
+/// The portal has no change feed — a row records when it was written and nothing else — so
 /// "changed" is computed here, by listing the folder and diffing against what it held last time
 /// (`SnapshotStore`). That is enough to be correct: every item carries a version derived from its
 /// content hash, so an edit, an addition and a removal are all visible in the diff.
 ///
-/// The system asks for changes only when it is told there are some, and nothing about a document
-/// filed in the dashboard reaches this process on its own — so a live enumerator registers with
+/// The system asks for changes only when it is told there are some, and nothing about a file filed
+/// in the dashboard reaches this process on its own — so a live enumerator registers with
 /// `ChangePoller`, which is woken by the portal's push and falls back to asking on a slow timer. That
 /// is what keeps an open folder current; a write made through Finder signals directly and waits for
 /// neither.
@@ -127,10 +127,9 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator, PolledContaine
         let listing = try await api.list(identity.destination)
 
         // Both built in one pass, and the snapshot keyed off the items that were just built rather
-        // than off identities worked out a second time: what an identifier is depends on which tree
-        // the folder is in, and deriving it twice is how the two readings come to disagree. It also
-        // keeps the two in step where a row is left out, which nothing walking them in parallel
-        // afterwards would.
+        // than off identities worked out a second time: deriving an identifier twice is how the two
+        // readings come to disagree. It also keeps the two in step where a row is left out, which
+        // nothing walking them in parallel afterwards would.
         var items: [FileProviderItem] = []
         var snapshot = SnapshotStore.Snapshot()
 
@@ -141,31 +140,34 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator, PolledContaine
 
         let container = identity.destination.logDescription
         for folder in listing.folders {
-            let item = FileProviderItem.folder(in: identity, remote: folder, standing: standing)
+            let permissions = folder.permissions ?? Permissions(assumedFrom: folder.writable)
+            let item = FileProviderItem.folder(in: identity, remote: folder, permissions: permissions, standing: standing)
             guard nameable(item, in: container) else { continue }
             items.append(item)
             // The folder's own version has nothing to do with what is inside it — that is the
-            // child's anchor, not this one's — so a rename is the only thing that shows here.
-            snapshot[item.itemIdentifier.rawValue] = "\(folder.name)|\(folder.writable)"
+            // child's anchor, not this one's — so a rename, or a change in what may be done to it,
+            // is all that shows here.
+            snapshot[item.itemIdentifier.rawValue] = "\(folder.name)|\(permissions.signature)"
         }
         for file in listing.files {
-            let item = FileProviderItem.file(in: identity, remote: file, standing: standing)
+            let permissions = file.permissions ?? listing.assumedForFiles
+            let item = FileProviderItem.file(in: identity, remote: file, permissions: permissions, standing: standing)
             guard nameable(item, in: container) else { continue }
             items.append(item)
-            snapshot[item.itemIdentifier.rawValue] = "\(file.version)|\(file.filename)"
+            snapshot[item.itemIdentifier.rawValue] = "\(file.version)|\(file.filename)|\(permissions.signature)"
         }
 
         return (items, snapshot)
     }
 }
 
-/// What has been thrown away out of the admin's own folder, under either of the two containers that
-/// hold it.
+/// What has been thrown away, under either of the two containers that hold it.
 ///
 /// One bin for the whole volume, which is what the framework offers and what the portal has: a
 /// trashed row keeps the folder it was in, so nothing needs a bin per directory to know where a
-/// thing came from. The classified tree contributes nothing — a document has no path to be put back
-/// along, and deleting one is final there as it is in the dashboard.
+/// thing came from. One tree means it now answers for all of it rather than for one branch — and
+/// what an admin may see of the bin is the same question as everywhere else, asked of each row's
+/// own chain by the server.
 ///
 /// What is listed is the top of each thing thrown away. A directory takes its contents with it, so
 /// the bin offers the directory; the files inside it are still in the table, still under it, and
@@ -293,7 +295,7 @@ final class BinEnumerator: NSObject, NSFileProviderEnumerator, PolledContainer {
         var snapshot = SnapshotStore.Snapshot()
 
         for entry in try await api.trashed() {
-            let item = FileProviderItem.fileRow(entry)
+            let item = FileProviderItem.item(entry)
             guard nameable(item, in: describing) else { continue }
             items.append(item)
             snapshot[item.itemIdentifier.rawValue] = "\(entry.version)|\(entry.filename)"

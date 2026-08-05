@@ -6,8 +6,8 @@ import UniformTypeIdentifiers
 ///
 /// A *replicated* extension: macOS keeps its own record of the items and asks this class for
 /// metadata, contents and changes, rather than the extension owning a folder on disk. That is the
-/// right shape for a document store that is not a folder anywhere — the portal's tree is a set of
-/// database views, and nothing about it maps onto a directory a provider could hand over.
+/// right shape for a store that is not a folder anywhere — the portal's tree is rows in a table and
+/// bytes in a bucket, and nothing about it maps onto a directory a provider could hand over.
 final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     private let api = HelmsleyAPI.shared
@@ -48,7 +48,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             do {
                 completionHandler(try await item(for: identity), nil)
             } catch {
-                Log.provider.error("item(for: \(identity.path.logPath, privacy: .public)) failed: \(error.localizedDescription, privacy: .public)")
+                Log.provider.error("item(for: \(identity.destination.logDescription, privacy: .public)) failed: \(error.localizedDescription, privacy: .public)")
                 completionHandler(nil, FileProviderError.translate(error))
             }
             progress.completedUnitCount = 1
@@ -58,15 +58,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
     /// One item, by identity.
     ///
-    /// Anything in a file tree answers directly, folder or file, in the bin or not: it is a row with
-    /// an id, and `/items/:id` says what it is and where it sits — including which mount, when it
-    /// sits at the top of one.
-    ///
-    /// A document answers directly too — a document id is a document id whichever folder is showing
-    /// it. A folder of the classified tree cannot: its name and whether it takes uploads are
-    /// properties of how its parent lists it, and the portal has no endpoint that describes a filter
-    /// in isolation. So it is found by listing the folder above it, which is a request the system has
-    /// almost always just made anyway.
+    /// Everything below the mount point answers directly, folder or file, in the bin or not: it is a
+    /// row with an id, and `/items/:id` says what it is, where it sits, and what may be done to it.
+    /// One request, whatever was asked for — which is the whole of what one tree bought.
     ///
     /// One thing is checked rather than passed on: an item with no name aborts the process the
     /// moment the framework sees it, so what the server said is refused here instead of crashing the
@@ -79,22 +73,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         switch identity {
         case .root:
             item = FileProviderItem.root
-
-        case .fileRow(let id):
-            item = FileProviderItem.fileRow(try await api.item(id: id))
-
-        case .file(let path, let documentID):
-            let remote = try await api.document(id: documentID)
-            item = FileProviderItem.file(in: container(of: path), remote: remote)
-
-        case .folder(let path):
-            guard let segment = path.last else { return FileProviderItem.root }
-            let above = container(of: path.dropLast())
-            let parent = try await api.list(above.destination)
-            guard let remote = parent.folders.first(where: { $0.segment == segment }) else {
-                throw NSFileProviderError(.noSuchItem)
-            }
-            item = FileProviderItem.folder(in: above, remote: remote)
+        case .node(let id):
+            item = FileProviderItem.item(try await api.item(id: id), as: identity)
         }
 
         guard item.isNameable else {
@@ -102,12 +82,6 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             throw NSFileProviderError(.noSuchItem)
         }
         return item
-    }
-
-    /// The folder a path names, as an identity. Only ever used for the classified tree, whose
-    /// folders are still addressed this way; the empty path is the mount point itself.
-    private func container(of path: some Collection<String>) -> ItemIdentity {
-        path.isEmpty ? .root : .folder(path: Array(path))
     }
 
     // MARK: - Contents
@@ -120,9 +94,9 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     ) -> Progress {
         let progress = Progress()
 
-        // Either tree, since both keep their bytes behind the same redirect — and a trashed personal
-        // file included, because something in the bin is still there to be looked at.
-        guard let identity = ItemIdentity(itemIdentifier), let contentID = identity.deletableID else {
+        // A trashed file included, because something in the bin is still there to be looked at. Only
+        // the mount point has no id and no bytes behind it.
+        guard let identity = ItemIdentity(itemIdentifier), let contentID = identity.nodeID else {
             completionHandler(nil, nil, NSFileProviderError(.noSuchItem))
             return progress
         }
@@ -130,8 +104,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let work = Task {
             do {
                 // Metadata first: the item handed back must describe the bytes handed back, and a
-                // document replaced between the system's last listing and this fetch would
-                // otherwise be delivered under the old version and never re-fetched.
+                // file replaced between the system's last listing and this fetch would otherwise be
+                // delivered under the old version and never re-fetched.
                 let item = try await self.item(for: identity)
                 // The most expensive thing this extension does, and the only one whose cost the
                 // user feels — worth a line each way, so a slow mount can be told from a slow link.
@@ -169,15 +143,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             return progress
         }
 
+        // A folder is a row wherever it is in this tree, so a new one is a request the server can
+        // always be asked. Whether it will take it is the destination's own answer, which the
+        // listing already carried: a folder that refuses one never offered `.allowsAddingSubItems`,
+        // so Finder does not get this far, and a race against somebody else's change is refused by
+        // the server in a sentence worth showing.
         if itemTemplate.contentType == .folder {
-            // A folder is a row only in the two file trees. In the rest of the tree it is a filter
-            // over `documents` that the directory spec defines, so there is nothing there to
-            // create. Refused rather than silently ignored, so a new folder never sits in Finder
-            // looking as though it exists.
-            guard parent.isFileTree else {
-                completionHandler(nil, [], false, FileProviderError.unsupported("Folders can only be made in your own folder or in Shared — the rest of the Helmsley tree is the portal's, and fixed."))
-                return progress
-            }
             return makeFolder(in: parent, named: itemTemplate.filename, progress: progress, completionHandler: completionHandler)
         }
 
@@ -196,9 +167,19 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             do {
                 let remote = try await api.upload(to: destination, filename: filename, mime: mime, fileURL: contents, reporting: progress)
                 await signal.fire()
-                // No pending fields and nothing still uploading: the document is filed by the time
-                // this returns, because the finalise step is what created it.
-                completionHandler(FileProviderItem.file(in: parent, remote: remote), [], false, nil)
+                // No pending fields and nothing still uploading: the file is filed by the time this
+                // returns, because the finalise step is what created it.
+                //
+                // The row is new and in a folder that just took it, so everything is open to it —
+                // which is what the server answers, and what is assumed of a portal that does not.
+                completionHandler(
+                    FileProviderItem.file(
+                        in: parent,
+                        remote: remote,
+                        permissions: remote.permissions ?? Permissions(assumedFrom: true)
+                    ),
+                    [], false, nil
+                )
             } catch {
                 Log.provider.error("upload to \(destination.logDescription, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 completionHandler(nil, [], false, FileProviderError.translate(error))
@@ -224,7 +205,17 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             do {
                 let remote = try await api.createFolder(in: parent.destination, name: name)
                 await signal.fire()
-                completionHandler(FileProviderItem.folder(in: parent, remote: remote), [], false, nil)
+                // A folder somebody just made in a folder that took it: theirs to rename, move,
+                // fill and throw away, which is what the server says of one and what is assumed of
+                // a portal that does not say.
+                completionHandler(
+                    FileProviderItem.folder(
+                        in: parent,
+                        remote: remote,
+                        permissions: remote.permissions ?? Permissions(assumedFrom: true)
+                    ),
+                    [], false, nil
+                )
             } catch {
                 Log.provider.error("creating a folder in \(parent.destination.logDescription, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 completionHandler(nil, [], false, FileProviderError.translate(error))
@@ -251,36 +242,20 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         }
 
         // Rewriting in place has no endpoint behind it anywhere in the tree, for the reason
-        // `.allowsWriting` is never offered: a file's bytes are not something either table lets you
+        // `.allowsWriting` is never offered: a file's bytes are not something the table lets you
         // replace under the same row.
         guard !changedFields.contains(.contents) else {
             completionHandler(nil, [], false, FileProviderError.unsupported("Helmsley files cannot be edited in place. Save a copy and file that instead."))
             return progress
         }
 
-        // Renaming and moving reach the server only inside the file trees. A document's
-        // title, its type and its links are the filing an admin chose in the portal, which refuses
-        // to refile some of them outright (a compliance document, for one) — and it has no path to
-        // move one along in any case. Anything else Finder wants to record — a tag, a last-used
-        // date — is local, so it is accepted unchanged.
+        // Anything else Finder wants to record — a tag, a last-used date — is local, so it is
+        // accepted unchanged. The mount point is not a row and has nothing to change.
         let relocation = changedFields.intersection([.filename, .parentItemIdentifier])
-        guard let itemID = identity.fileRowID else {
-            guard relocation.isEmpty else {
-                completionHandler(nil, [], false, FileProviderError.unsupported(identity.isFileTree
-                    ? "A folder the portal defines cannot be renamed or moved — your own is named after you, and Shared is named in the directory itself."
-                    : "Helmsley documents cannot be renamed or moved. Change the filing in the portal instead."))
-                return progress
-            }
-            return acknowledge(identity, progress: progress, completionHandler: completionHandler)
-        }
-        guard !relocation.isEmpty else {
+        guard let itemID = identity.nodeID, !relocation.isEmpty else {
             return acknowledge(identity, progress: progress, completionHandler: completionHandler)
         }
 
-        // The identifier the answer comes back under. Everything the system has enumerated since
-        // file rows became id-addressed already is one; anything still held by path becomes one
-        // here, once, and the folder re-syncs around it.
-        let settled = identity.asFileRow
         let target = item.parentItemIdentifier
         let work = Task {
             do {
@@ -288,7 +263,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 // one handed over describes what it should become — its parentItemIdentifier is the
                 // destination — so the folder being left behind has to be looked up, and it is what
                 // tells a restore apart from an ordinary move.
-                let source = FileProviderItem.fileRow(try await api.item(id: itemID)).parentItemIdentifier
+                let source = FileProviderItem.item(try await api.item(id: itemID)).parentItemIdentifier
 
                 if relocation.contains(.parentItemIdentifier) {
                     try await self.reparent(itemID, from: source, to: target)
@@ -302,7 +277,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                     try await api.rename(id: itemID, to: item.filename)
                 }
 
-                let updated = try await self.item(for: settled)
+                let updated = try await self.item(for: identity)
                 await signal.fire()
                 completionHandler(updated, [], false, nil)
             } catch {
@@ -332,11 +307,12 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             return try await api.trash(id: itemID)
         }
 
-        // Either file tree is a destination, including the other one: dragging something into
-        // Shared is how it gets there, and dragging it back out is the undo. The server moves the
-        // whole subtree across in one go.
-        guard let destination = ItemIdentity(target), destination.isFileTree else {
-            throw FileProviderError.unsupported("An item can only be moved within your own folder or Shared.")
+        // Any folder of the tree is a destination now, since all of them are rows — dragging
+        // something from a client's folder into Shared is a move like any other, and the server
+        // takes the whole subtree across in one go. Whether this particular folder will have it is
+        // the server's to answer; what arrives here is only an identifier that has to name one.
+        guard let destination = ItemIdentity(target) else {
+            throw FileProviderError.unsupported("That is not a folder of the Helmsley tree.")
         }
         if source == .trashContainer {
             // Restored and relocated in one step, because that is what dragging something out of the
@@ -374,15 +350,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     ) -> Progress {
         let progress = Progress(totalUnitCount: 1)
 
-        // A file, or a folder in the admin's own branch — the only folders that are rows rather than
-        // filters. The classified tree's folders are the directory spec's, so there is nothing there
-        // for a delete to remove.
+        // Anything but the mount point, which is not a row and so has nothing to remove.
         //
         // This is the permanent one. A Finder delete on something that can be trashed arrives as a
-        // reparent into the bin instead (modifyItem), so what reaches here is Delete Immediately, an
-        // emptied trash, or a document — for which there was never anything else.
-        guard let identity = ItemIdentity(identifier), let itemID = identity.deletableID else {
-            completionHandler(FileProviderError.unsupported("Only files and your own folders can be deleted — the rest of the tree is the portal's structure."))
+        // reparent into the bin instead (modifyItem), so what reaches here is Delete Immediately or
+        // an emptied trash.
+        guard let identity = ItemIdentity(identifier), let itemID = identity.nodeID else {
+            completionHandler(FileProviderError.unsupported("The Helmsley volume itself cannot be deleted."))
             return progress
         }
 
@@ -394,10 +368,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 // about the working set, and what the folder lost is worked out when the system comes
                 // asking for the working set's changes.
                 //
-                // Deletes the document, not this folder's view of it: a row listed in several
-                // folders disappears from all of them, which is what deleting the file means. A
-                // folder takes what is under it — including anything already in the bin from inside
-                // it, which is gone either way once the folder holding it is.
+                // A folder takes what is under it — including anything already in the bin from
+                // inside it, which is gone either way once the folder holding it is.
                 try await api.delete(id: itemID)
                 await signal.fire()
                 completionHandler(nil)
@@ -419,30 +391,23 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         request: NSFileProviderRequest
     ) throws -> NSFileProviderEnumerator {
         Log.provider.info("enumerator requested for \(containerItemIdentifier.rawValue, privacy: .public)")
-        // One bin for the volume, holding what has been thrown out of the admin's own folder. The
-        // classified tree puts nothing in it — a document has no path to be put back along, and
-        // deleting one there is final, as it is in the dashboard.
+        // One bin for the volume, over the whole tree — as the framework offers and the portal has.
         //
         // The working set answers with the same listing, and with nothing else: the framework asks
         // for trashed items there by name, and holding the rest of this tree in it would mean
-        // indexing every document of every client of every syndicate.
+        // indexing every file of every client of every syndicate.
         if containerItemIdentifier == .workingSet || containerItemIdentifier == .trashContainer {
             return BinEnumerator(container: containerItemIdentifier, watchedBy: poller)
         }
 
-        guard let identity = ItemIdentity(containerItemIdentifier), !isDocument(identity) else {
+        // Whether the identifier names a folder rather than a file is not asked here: an identifier
+        // is a row id and nothing about it says which it is. The enumerator finds out by listing —
+        // the server answers 404 for a file, which is the right answer to enumerating one.
+        guard let identity = ItemIdentity(containerItemIdentifier) else {
             throw NSFileProviderError(.noSuchItem)
         }
         return FolderEnumerator(identity: identity, watchedBy: poller)
     }
-
-    /// A document is never a container. A personal identity may be either, and the enumerator finds
-    /// out by asking — listing a file answers 404, which is the right answer to enumerating one.
-    private func isDocument(_ identity: ItemIdentity) -> Bool {
-        if case .file = identity { return true }
-        return false
-    }
-
 }
 
 /// Turns what this app's own layers throw into what the file provider framework understands.

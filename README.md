@@ -1,24 +1,33 @@
 # Helmsley Drive
 
-The Helmsley client portal's document tree, mounted as a volume — in Finder on macOS, and under
+The Helmsley client portal's file tree, mounted as a volume — in Finder on macOS, and under
 Locations in the Files app on iPhone and iPad.
 
 Not a sync folder: nothing is copied to the device until it is opened, and the structure shown is
-the portal's own documents explorer — the same folders, showing the same documents, filing an upload
-exactly where the dashboard would have filed it.
+the portal's own file explorer — the same tree, the same folders, the same rows. A file dropped in
+Finder is a file the dashboard shows a moment later, in the folder it was dropped on.
 
 ```
 Helmsley Documents/
-├── News/                          ← accepts uploads
+├── News/
+├── Shared/                        ← the office's, every admin's to change
+├── Staff/
+│   └── Ben Allright/              ← yours alone; nobody else may write in it
 ├── Properties/
-│   ├── Arabesque Syndicate/
-│   │   ├── News/  Valuation/  Annual Report/  Brochure/
-│   └── Inactive/…
+│   └── Active/
+│       └── Arabesque Syndicate/
+│           ├── Brochure/  Valuation/  Annual Report/  News/  Deeds & Legals/
 ├── Clients/
-│   └── A J Bell Platinum SSAS/
-│       ├── Remittance/  Properties/  Compliance/
-└── Orphaned/                      ← only when something is in it
+│   └── Active/
+│       └── A J Bell Platinum SSAS/
+│           ├── Compliance/  Deeds & Legals/  Remittance/
+├── Loans/
+└── Orphaned/                      ← read-only: what the nightly sweep could not place
 ```
+
+Most of those leaf folders are *declared* rather than written: the portal knows every client has a
+Compliance folder without writing one until something is filed in it. They list, walk and take a drop
+exactly like a folder that exists, because the first drop is what makes them exist.
 
 ## How it fits together
 
@@ -68,22 +77,24 @@ signs in interactively, so that code has no business being compiled into one.
 
 ### Identity
 
-The portal's tree is a set of database views, not stored paths: a document row has no path, and it
-appears in every folder whose filter matches it. A filesystem insists on one item having one parent,
-so a file's identity here is *the document as seen from a particular folder*. A document listed in
-two folders is two items over the same bytes — each is exactly what that folder shows, and deleting
-either deletes the document.
+The portal keeps its files in one table, and that table is a tree: a folder is a row, a file is a
+row, and a row's `parent_id` is where it sits. So an item's identity here is its row id and nothing
+else — not where it is, which changes the moment somebody drags it, and not what it is called.
+
+That is a change. The volume used to serve two tables through one mount — `documents`, a set of
+views where a row had no path at all, and `admin_files`, a real filesystem for staff — and carried
+two shapes of identifier to match. One tree means one shape, and it means every write the volume can
+make is available everywhere the portal allows it rather than in one branch.
 
 A file's version is its content hash, which is also its key in the storage bucket. It changes when
-and only when the bytes do, so a downloaded copy stays valid until the document is genuinely
-replaced.
+and only when the bytes do, so a downloaded copy stays valid until the file is genuinely replaced.
 
 ### Where the bytes go
 
 Never through the portal. A download is answered with a `302` into Cloud Storage and an upload PUTs
 to a signed URL, so both transfers are between the device and the bucket — App Engine only ever
 carries the redirect, the upload ticket and the finalise. That is not a nicety: App Engine caps a
-request at 32MB against a 500MB document limit, so proxying could not work.
+request at 32MB against a 500MB file limit, so proxying could not work.
 
 `Transport` (in `HelmsleyAPI.swift`) builds those transfers as `URLSessionTask`s rather than using
 the async conveniences, because the framework wants the task's `Progress`: it is the percentage the
@@ -98,7 +109,7 @@ tell a stripped redirect from one that quietly carried the token on.
 
 ### Keeping up to date
 
-The portal has no change feed — `documents` records an upload date and nothing else — so "what
+The portal has no change feed — a row records when it was written and nothing else — so "what
 changed" is computed in the extension, by listing a folder and diffing it against what that folder
 held last time (`FileProvider/SnapshotStore.swift`, persisted so a cold start still knows what has
 been removed).
@@ -106,7 +117,7 @@ been removed).
 Nothing asks on its own. This is a replicated extension, so the system owns the copy: a folder is
 enumerated once and thereafter the system asks only for *changes*, and only when this extension says
 there are some. Finder's refresh does not provoke a listing and navigating back into a folder does
-not either — that is the old non-replicated behaviour, and assuming it here is what left a document
+not either — that is the old non-replicated behaviour, and assuming it here is what left a file
 filed in the dashboard invisible until the volume was removed and re-added.
 
 So something has to say so, and there is exactly one way to say it.
@@ -122,7 +133,7 @@ So something has to say so, and there is exactly one way to say it.
 
 This extension named the folder that had changed for a long time, which is what a non-replicated
 provider does and what every article about them describes. Every one of those signals was accepted
-and discarded: the folder's own enumerator was never asked for changes, and a document filed in the
+and discarded: the folder's own enumerator was never asked for changes, and a file filed in the
 dashboard sat there unseen no matter how often the extension said otherwise — including after a
 Finder write, and including on every poll round. It looked like a portal problem and was never one.
 
@@ -149,10 +160,9 @@ What arrives is less than it looks like. A file provider push is not delivered t
 `pushRegistry(_:didReceiveIncomingPushWith:for:)` is never called for this type. The system takes
 the notification, reads the domain out of the payload, and signals that domain's **working set**
 itself — and for a replicated extension it ignores any other container the payload names. So the
-whole message is "look again", which is exactly as much as the portal could honestly say: a document
-row has no path and appears in every folder whose filter matches it, so which folders one upload
-changed is a question only `directoryStructure.js` can answer, and answering it server-side would
-mean a second copy of the tree to keep in step.
+whole message is "look again". The portal could say which folder moved, now that a row has exactly
+one, and it would make no difference: there is one field for it in the payload and the system
+discards what it holds.
 
 A push therefore lands as a working set change enumeration and nothing else — the system signals it
 on the extension's behalf — and `BinEnumerator` answers it with whatever the open folders have to
@@ -187,7 +197,7 @@ listing whatever was asked for — reports no changes and has the system record 
 having never been told what it missed, which is a folder that stays wrong until the next remount.
 
 What the working set *lists* is the bin and nothing else — as distinct from what it *reports*, which
-is every change above. Filling its listing with the tree would mean enumerating every document of
+is every change above. Filling its listing with the tree would mean enumerating every file of
 every client of every syndicate on a schedule nobody asked for; folders enumerate on demand instead.
 The bin is the exception that argument never covered — it is bounded by what one admin threw away,
 and the framework asks for trashed items there by name. What it buys is Spotlight: the bin is
@@ -197,91 +207,75 @@ indexed, and the system stops learning about it only when someone opens the tras
 
 Identical on both platforms — it is the same extension.
 
-Identical on both platforms — it is the same extension. The tree has two halves, and what the volume
-can do differs between them, because they are different kinds of thing.
+| | |
+| --- | --- |
+| Browse | anywhere the signed-in admin may read |
+| Open, preview, Quick Look, copy out | yes — downloaded on first open, evictable afterwards |
+| Drop a file in | anywhere the portal calls writable, by the ticket → bucket → finalise path |
+| New folder | the same places |
+| Rename | wherever the portal allows it — including the folders it placed itself, since a folder's identity is its type and a renamed `Shared` is still the shared folder |
+| Move, delete, trash | anywhere but the folders the tree itself placed, which move only when the thing they belong to changes state |
+| Save changes back | **no** — refused with an explanation |
 
-The **classified tree** — Clients, Properties, everything the dashboard files — is a set of views
-over `documents`. A row has no path and appears in every folder whose filter matches it.
+Saving changes back is the one refusal that is the same everywhere: nothing replaces a file's bytes
+under the same row. A row's bytes are stored under a key derived from its content hash, so different
+bytes are a different row — offering `.allowsWriting` would mean accepting a save in Finder that
+quietly never reached the server.
 
-The **file trees** — `My Files`, the signed-in admin's own folder, and `Shared`, the office's — are
-the branches that are a real filesystem: a row sits in exactly one directory because someone put it
-there. They are one table under two mounts and behave identically here; the difference is only who
-else sees them, which is the portal's business. A row can be dragged from one to the other, and the
-whole subtree goes with it.
+Everything else in that table is a *server* answer, not a rule this app holds. Each listing and each
+by-id lookup carries a `permissions` block — `writable`, `renamable`, `movable`, `deletable` — that
+the portal computes from the row's whole ancestor chain, and `FileProviderItem` turns straight into
+`NSFileProviderItemCapabilities`. So Finder greys out what the portal would refuse *before* the user
+commits to it, and the rules stay in the one place that knows them:
 
-| | classified tree | file trees |
-| --- | --- | --- |
-| Browse | yes | yes |
-| Open, preview, Quick Look, copy out | yes — downloaded on first open, evictable afterwards | yes |
-| Drop a file in | where the folder accepts uploads — filed via the portal's own ticket → bucket → finalise path | anywhere in it |
-| Delete | **final** — the row and its bytes, exactly as the dashboard's delete does | to the trash, and back out again |
-| New folder | **no** — refused with an explanation | yes |
-| Rename, move | **no** — refused with an explanation | yes |
-| Save changes back | **no** — refused with an explanation | **no** — refused with an explanation |
+- an admin's own folder under `Staff/` is theirs; a super admin may read it and still not write in it
+- `Orphaned/` takes nothing from anybody — it is a record of what the nightly sweep could not place,
+  and a folder that can be filed into stops being one
+- a folder the tree placed — `Shared`, `Clients`, a client's own folder, a declared `Compliance` —
+  can be renamed but never moved or thrown away
+- a declared folder that has no row yet can be filed into (that is what makes it real) and nothing
+  else, since there is nothing there to rename or delete
 
-Renaming and moving a *document* are refused because the portal has no endpoint behind them: its
-title, type and links are the filing an admin chose, and some filings it refuses to change at all (a
-compliance document cannot be refiled). Creating a folder there is refused because a folder is a
-filter that `directoryStructure.js` defines, not a container. Offering any of them would mean
-accepting an edit that quietly never reached the server; Finder shows them as locked, which is the
-truth.
+The one place this app is stricter than the portal is the mount point: the server would take a new
+folder at the top of the tree, and the volume does not offer it. The top level is the skeleton —
+`Clients`, `Properties`, `Loans`, `Shared`, `Staff`, `Orphaned` — and something dragged in beside
+them would be none of it.
 
-Saving changes back is refused on **both** halves, and for the same reason each time: nothing
-replaces a file's bytes under the same row. A document's are the filing; a file row's bytes are
-stored under a key derived from its content hash, so different bytes are a different row.
+### Item identifiers are opaque, and one shape
 
-Which folders accept uploads comes from the portal's `directoryStructure.js`, resolved server-side —
-the app never sends a document type or a client id, so it cannot file anything anywhere the
-dashboard would not have. Which folders can be *restructured* is not a flag on a listing at all: the
-mounts have fixed segments (`My Files`, stable while the folder is labelled with the admin's name,
-and `Shared`), and `ItemIdentity` decides from the path alone, before Finder is offered the
-operation.
+An identifier is `N.` and the row id, and nothing in this app parses what follows. The id is a
+serial for a row and a `v<parent>_<type>` reference for a folder the portal has declared but not yet
+written; both are strings the server answers to, and treating either as a number would lose half of
+what the tree can name.
 
-### Item identifiers are opaque, and two shapes
+A path is deliberately *not* part of it. Rows move — dragged between folders, thrown away and put
+back — and if where a thing sat were part of what identified it, every one of those would change
+what the system thinks the item *is*. Where an item sits is answered by `/api/files/items/:id`
+instead, which is the same lookup that says whether it is in the bin.
 
-Two tables hang off one volume — `documents` and `admin_files` — and their ids are serials from
-separate sequences, so the server marks which one an id came from and hands over the whole thing as
-a string. Nothing in this app parses one. Reading an id as a number would silently drop the mark and
-fail to decode every file row outright.
+The mount point is the exception, and has to be: the framework fixes its identifier as
+`.rootContainer`, so the tree's own root row has no say in it. The volume addresses it by the empty
+path, and an item sitting directly under it reports **no** parent rather than the root row's id —
+two names for one folder would be two folders. `/api/files/items/:id` answers 404 for that row for
+the same reason, and because it has no name of its own to answer with: an item with an empty
+filename is not an error the file provider framework reports but one it aborts on, so nothing may
+ever be in a position to hand it one.
 
-`admin_files` is one table under two mounts, `My Files` and `Shared`, so an id names a row in either
-without saying which — and nothing here is told. The two behave identically: same identifiers, same
-capabilities, same bin. Which tree a row is in decides only *who else sees it*, which is the
-portal's business and never this app's.
-
-What an identifier is made of differs between the halves, and has to:
-
-- **The classified tree** identifies a document by *the folder it was seen in plus its id*, because a
-  document genuinely is a different item in each folder that lists it — it has no path of its own,
-  and a filesystem insisting on one parent has to pick. Folders there are identified by path, since
-  a folder is a filter the directory spec defines and has no identity apart from where it sits.
-- **The file trees** (`My Files`, `Shared`) identify everything by the row id alone. A path would be
-  the wrong thing: rows there move — between the two mounts as well as within one — and go into the
-  bin and come back, and if the path were part of the identifier every one of those would change
-  what the system thinks the item *is*.
-
-`ItemIdentity` still decodes the path-based form for file rows, so nothing already synced is
-orphaned; the first enumeration after that change re-issues them by id, which costs one re-sync of
-`My Files` and nothing else. Where the item's parent is not in its identifier, it comes from
-`/api/files/items/:id` — the same lookup that says whether it is in the trash.
-
-A mount itself is the exception, and has to be: `My Files` and `Shared` are listed by the classified
-tree above them, which has no ids at all, so each is addressed by path and by nothing else. An item
-sitting directly in one therefore reports **no** parent rather than the root row's id — and, since
-there are two, a `root` naming which mount to hang it under instead. The row is real — it is what
-everything below hangs off in the table — but naming it would hang the item off an identifier no
-listing ever vends, and the system would go looking for a folder it had never seen.
-`/api/files/items/:id` answers 404 for that row for the same reason, and because it has no name of
-its own to answer with: an item with an empty filename is not an error the file provider framework
-reports but one it aborts on, so nothing may ever be in a position to hand it one.
+**Identifiers minted before the two trees became one are not decoded at all.** They carried `D.`,
+`F.` and `P.` prefixes over ids in `documents` and `admin_files`, and those ids mean something else
+in the table this volume now reads — a small serial exists there too, belonging to another file
+entirely. Resolving one would hand back the wrong file's bytes under a name somebody trusted. So the
+prefix is new and the old ones fail: the system drops what it was holding and enumerates the volume
+again from the root, once.
 
 ### The trash
 
-The file trees only, and one bin across both of them, as the volume has one Trash. `deleted_at` on
-`admin_files` is the whole mechanism, and it is a flag rather than a move: the row keeps the parent it always had, so putting it back is clearing the flag, and a folder
-comes back with its subtree intact. Only the top of what was thrown away is marked — everything
-under it is already unreachable, because walking requires every hop to be live — which is also why
-the bin lists the folder rather than each file that went along inside it.
+One bin over the whole tree, as the volume has one Trash. `deleted_at` on `files` is the whole
+mechanism, and it is a flag rather than a move: the row keeps the parent it always had, so putting it
+back is clearing the flag, and a folder comes back with its subtree intact. Only the top of what was
+thrown away is marked — everything under it is already unreachable, because walking requires every
+hop to be live — which is also why the bin lists the folder rather than each file that went along
+inside it.
 
 The namespace index is partial on the flag, so a name in the bin is not a name in use. The cost is
 that putting something back can collide, which is settled by numbering, the way a move already is.
@@ -292,11 +286,12 @@ there. That is the one read allowed to name something thrown away — `locateQue
 extension that everything in it is to be read or purged and nothing else. Rename and refile the
 portal refuses under a trashed folder; a restore is worse than refused, since the mark it would
 clear is on the folder above, so `.allowsReparenting` stops at the top of what was thrown away.
-Ownership is what authorises any of it, and ownership is unchanged: the bin is a second way into an
-admin's own rows, never into anyone else's.
+Permission is what authorises any of it, and it is unchanged by being in the bin: each candidate's
+own ancestor chain is asked, so the bin is a second way into rows an admin could already reach and
+never into anyone else's.
 
-Trashing keeps the bytes. Only a purge reaches the bucket, and it goes through the same
-`releaseBytes` that asks both tables whether anything still names those bytes.
+Trashing keeps the bytes. Only a purge removes the row, and the objects behind it are left to the
+nightly sweep, which finds orphans from the bucket end rather than from a delete that noticed.
 
 The framework has no separate verb for any of this: an item is trashed by being reparented into
 `.trashContainer` and restored by being reparented out, and `isTrashed` is iOS-only, so hanging
@@ -314,42 +309,37 @@ as an ordinary reparent, and both work. `mv(1)` does not, on a folder: a binned 
 bit, because the bit is `.allowsAddingSubItems` and nothing may be dropped into something thrown
 away. Finder's move goes through the daemon and is authorised against `.allowsReparenting` instead.
 
-Documents are deliberately excluded. A row there has no path to be put back along; its content hash
-is unique table-wide, so a trashed one would go on forbidding a re-upload of a file nobody can see;
-and every listing in the portal — `visibilityClause`, the compiler, badge counts, search, the
-dashboard's own `/browse` — would need the filter, with a missed one leaving a deleted document
-visible. That is a portal-wide decision, not a file-provider feature.
-
 ## Changes to the portal
 
 All in `../Helmsley`:
 
 | File | Change |
 | --- | --- |
-| `backend/routes/files.js` | **new** — the `/api/files` API this app talks to |
+| `backend/routes/fileProvider.js` | the `/api/files` API this app talks to — one router over the `files` tree, bearer-authenticated |
 | `backend/utils/http/bearerAdmin.js` | **new** — authenticates a request by OAuth access token instead of by session cookie |
-| `backend/utils/domain/documents/deleteDocument.js` | **new** — the delete (row + bytes), extracted so Finder and the dashboard cannot come to disagree about it |
-| `backend/routes/admin/documents.js` | delete now calls the above |
-| `backend/utils/domain/adminFiles/adminFileTree.js` | **new** — the file trees, walked and listed: the mounts the classified tree hands off to. Reads exclude trashed rows; `folderById`/`itemById` address one by id, `listTrash` answers the bin. `owner_admin_id` is which tree, NULL being the shared one |
-| `backend/utils/domain/adminFiles/adminFileWrites.js` | **new** — everything that changes it: new folder, rename, move, trash, restore, purge, finalise |
-| `backend/routes/admin/myFiles.js` | the dashboard's delete now trashes, and gains trash/restore/purge — the two surfaces sit over one table and a delete has to mean one thing across both |
-| `backend/utils/domain/documents/stagedUpload.js` | **new** — the bucket half of an upload, which was the same for both trees all along |
-| `backend/utils/domain/documents/directoryStructure.js` | the `My Files` and `Shared` mount nodes |
-| `backend/utils/domain/documents/directoryCompiler.js` | admin file listings also carry `file_mime`, `byte_size`, `content_hash`; a `mount` node hands its subtree over whole |
+| `backend/utils/domain/files/fileTree.js` | the tree itself: the skeleton, the walk, declared folders, and `permissionsFor()` — the whole of who may do what, pure and read off the ancestor chain the walk already loaded |
+| `backend/utils/domain/files/fileReads.js` | listing a folder's files, one row by id, and the bin. `listTrash` carries each row's permissions out with it, since the chain they were read from is gone by the time the volume asks |
+| `backend/utils/domain/files/fileWrites.js` | everything that changes it: new folder, rename, move, trash, restore, purge, finalise — each re-reading permission rather than trusting a caller |
+| `backend/utils/domain/documents/stagedUpload.js` | the bucket half of an upload |
+| `backend/routes/admin/files.js` | the dashboard explorer's reading half, over the same tree — so the two surfaces cannot come to disagree about it |
 | `backend/routes/admin/mcp/oauthProvider.js` | resolves additional statically registered OAuth clients |
 | `backend/utils/http/urls.js` | CSP `form-action` covers every registered client's callback, private-use schemes by scheme alone |
 | `backend/config.js` | `mcp.clients[]` — the schema for those, and `apns` — the push signing key |
-| `backend/server.js` | mounts `/api/files` with its own rate-limit bucket |
+| `backend/server.js` | mounts `/api/files` with its own rate-limit bucket, and resolves the tree's skeleton at boot |
 | `config.json` | registers the `helmsley-drive` client, and the APNs key |
 | `backend/utils/integrations/apns.js` | **new** — the APNs sender: an ES256 JWT and one HTTP/2 POST per device, no dependency |
 | `backend/utils/domain/fileProvider/pushDevices.js` | **new** — the registered devices, keyed by token |
-| `backend/utils/domain/fileProvider/changeSignal.js` | **new** — `signalDocuments()` / `signalPersonalFiles()` / `signalSharedFiles()`, coalesced and fanned out. A shared change tells everyone, as a documents change does |
-| `backend/routes/fileProvider.js` | `POST`/`DELETE /push-token`; every item carries `root`, the segment of the mount it hangs from, which is what a top-level row's null `parent` no longer says on its own |
+| `backend/utils/domain/fileProvider/changeSignal.js` | `signalPersonalFiles()` / `signalSharedFiles()`, coalesced and fanned out. Which one is a question about the row's chain — under an admin's own folder it is theirs alone, everywhere else it is everybody's |
 | `backend/scripts/init-db.js` | `file_provider_devices` |
-| everything that writes a document | signals afterwards: `finaliseUpload.js`, `deleteDocument.js`, the dashboard's document edit, a form's uploaded evidence and rendered PDF, a message attachment being filed, a distribution's remittances |
-| everything that writes a *folder* | the classified tree's folders are rows too — a client, a property, and the stake that puts a property under a client. Create, rename, retire and delete signal in `clients.js`, `properties.js`, `stakes.js` and `transfers.js`, and so does a joiner setting their own name in `join.js` |
-| `adminFileWrites.js` | signals the owning admin after each of its seven writes |
-| `admins.js` | signals that admin alone: My Files is labelled with their name, and Orphaned is the super admin's. Shared is labelled by the spec and narrowed by no role |
+| everything that writes a row | signals afterwards, through `fileWrites.js`'s own `signalChain()` — and so does the nightly sweep that files what the tree could not place |
+
+The move onto one tree took three more changes, all so a filesystem could be built on it:
+
+| File | Change |
+| --- | --- |
+| `fileProvider.js` | every listing and by-id lookup carries a `permissions` block — `writable`, `renamable`, `movable`, `deletable`. Without it the volume has to guess what to offer, and a guess is a dialog after the user has committed rather than a greyed-out menu item before |
+| `fileProvider.js` | a row directly under the tree's root reports **no** parent, rather than the root row's id. The volume addresses the root as its mount point, and an item that named the row instead would hang off an identifier no listing ever vends |
+| `fileTree.js` | a declared folder is not `renamable`. Every write on one is refused — there is no row to change, and the name comes from the declaration — but the other two were already false for a slug, so this was the one that had to be said |
 
 ### Why OAuth rather than the session cookie
 
@@ -429,7 +419,7 @@ minted. Both say so in the log as well (`APNs has no such device …`). Everythi
 misconfiguration to read and correct — `DeviceTokenNotForTopic` above all, which is APNs saying the
 topic does not name the app the token was minted for. That answer is the same from both hosts and
 the same for every device, so treating it as a dead token would have one mistyped topic empty the
-registry on the first document filed after a deploy. `npm run push-test` in `../Helmsley` sends one
+registry on the first file filed after a deploy. `npm run push-test` in `../Helmsley` sends one
 by hand and spells out what each refusal means.
 
 Which is why there is a way to ask on purpose. From the portal checkout:
@@ -639,31 +629,38 @@ the credential; `TCC access check failed … Cocoa 257` is the app not being in 
   `helmsley-drive:`; `consentFormActions()` in `backend/utils/http/urls.js` derives it from every
   registered client, so this means the portal being signed into is running an older build. It fails
   silently by design — a blocked form submission is a console line and nothing else.
-- **Uploads refused** — check the folder takes them. Only leaves with an `upload` block in the
-  portal's `directoryStructure.js` do, and the portal refuses byte-identical duplicates of a
-  document already filed there.
+- **Uploads refused, or a folder that will not take a new folder** — the portal does not call that
+  folder writable for this admin. `Orphaned/` takes nothing from anybody, and another admin's folder
+  under `Staff/` takes nothing from you however senior you are. The listing says so in its
+  `permissions` block, which is also why Finder usually refuses the drop before a byte moves.
 
 ## Verified
 
-- Both targets build clean, extension embedded at `Contents/PlugIns/HelmsleyFileProvider.appex`.
+Since the move onto the one `files` tree, only the first of these has been re-run: all four targets
+build clean, macOS and iOS, with the extension embedded at
+`Contents/PlugIns/HelmsleyFileProvider.appex`. Everything below was verified against the portal as it
+was, and the mechanisms it exercises — the OAuth round trip, the redirect into the bucket, the
+stripped `Authorization` header, the enumeration and diff — are untouched by the change. What is
+genuinely new and unexercised is the tree the volume walks and the permissions it now reads off each
+row. **Both want re-running against the live portal before this is trusted.**
+
 - `/api/files` rejects a missing or invalid bearer token with a 401 and a `WWW-Authenticate` header.
 - The listing path resolves against the live database: root folders, property and client fan-outs,
-  real filenames with extensions, byte sizes and content hashes, upload descriptors binding
-  `client_id` from the path, and a 404 for a client id that does not exist.
+  real filenames with extensions, byte sizes and content hashes, and a 404 for an id that does not
+  exist.
 
 Working against the live portal, through the real mount at
 `~/Library/CloudStorage/HelmsleyDrive-HelmsleyDocuments`:
 
 - the OAuth sign-in round trip, and the credential shared from the app to the extension
 - the root and both entity fan-outs (`Properties`, `Clients`) enumerating with real names
-- files listed with their true sizes, and permissions matching the tree — `News` writable,
-  `Properties` and `Clients` read-only, documents read-only
-- fetching a document's bytes end to end, proven by hash: the md5 of a PDF read through the mount
+- files listed with their true sizes, and permissions matching the tree
+- fetching a file's bytes end to end, proven by hash: the md5 of a PDF read through the mount
   equals the `content_hash` the database recorded at upload, with the log showing the fetch, the
   redirect to `storage.googleapis.com`, and `Authorization` being stripped on the way
 
   Verify with anything that reads every byte — `md5`, not `wc -c`, which answers from `fstat`
-  without touching the file and so "passes" against a document that was never downloaded at all.
+  without touching the file and so "passes" against a file that was never downloaded at all.
 
 On iOS, verified as far as this machine allows:
 
