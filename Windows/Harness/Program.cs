@@ -48,7 +48,7 @@ try
         File.ReadAllText(Path.Combine(root, "Docs", "a.txt")) == "the first version of a");
 
     portal.AddFile(docs, "later.txt", "arrived later");
-    portal.Rename(a, "a renamed.txt");
+    portal.RenameRemotely(a, "a renamed.txt");
     portal.ReplaceBytes(a, "the second version of a");
     var doomed = portal.AddFile(null, "doomed.txt", "soon gone");
     await mirror.SyncPass();
@@ -194,7 +194,7 @@ sealed class FakePortal : IRemoteStore
         lock (_lock) { _nodes[id].Content = Encoding.UTF8.GetBytes(content); _nodes[id].Revision++; }
     }
 
-    public void Rename(string id, string name) { lock (_lock) _nodes[id].Name = name; }
+    public void RenameRemotely(string id, string name) { lock (_lock) _nodes[id].Name = name; }
     public void Remove(string id) { lock (_lock) _nodes.Remove(id); }
 
     public string? FindByName(string name)
