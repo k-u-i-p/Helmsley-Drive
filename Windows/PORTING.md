@@ -13,12 +13,15 @@ end in the dev VM, with Explorer showing dehydrated entries that hydrate on open
 `Fetch` — and `App/HelmsleyRemoteStore.cs` now answers them from the portal (the hand-drawn stub it
 replaced is gone). The interface did not change to do it, and will grow as writes arrive.
 
-Steps 1–4 below are ported (2026-08-28): `Configuration`, DPAPI `TokenStore`, `OAuth` with the
-custom-scheme redirect — Ben's call, see below — and the full `HelmsleyApi` surface, reads and
-writes, with `HelmsleyRemoteStore` adapting the two engine calls onto it. The writes are wired to
-nothing yet; that is step 6. What remains untested is the interactive sign-in itself, which needs a
-browser on the VM's desktop: run the app there once, sign in, and the mirror of the real tree is
-the end-to-end proof. Steps 5–6 are not started.
+All six steps below are ported (2026-08-28): `Configuration`, DPAPI `TokenStore`, `OAuth` with the
+custom-scheme redirect — Ben's call, see below — the full `HelmsleyApi` surface behind
+`HelmsleyRemoteStore`, snapshot-diffed change tracking (`Mirror` + `SnapshotStore`), and the local
+write path (`LocalChanges` + the watcher in `Mirror`), each local event mapped onto the portal call
+it means. The engine is exercised end to end by `Windows/Harness/` against an in-memory portal —
+`dotnet run --project Harness` in the VM, ALL PASSED — which proves everything below the
+`IRemoteStore` seam. What remains untested is the seam's far side against the live portal, and that
+is gated on the interactive sign-in, which needs a browser on the VM's desktop: run the app there
+once, sign in, and the mirror of the real tree is the proof.
 
 ## What to port, in order
 
@@ -59,19 +62,21 @@ Two things in there are load-bearing and easy to lose:
 Keep `APIError`'s distinction between 404 and everything else. It is what tells the engine to remove
 an item rather than retry.
 
-**5. `Mac/FileProvider/SnapshotStore.swift` → change tracking.** The portal has no change feed, so
-"what changed" is a listing diffed against what that folder held last time, persisted so a cold start
-still knows what was removed. On Windows this also fixes a live limitation: `Placeholders.Create`
-currently fails on a second run, because it tries to create entries that already exist. Diffing is
-what makes the mirror re-runnable — create what appeared, `CfUpdatePlaceholder` what changed version,
-delete what went.
+**5. `Mac/FileProvider/SnapshotStore.swift` → change tracking.** Done — `SnapshotStore.cs` and the
+pass in `Mirror.cs`. The portal has no change feed, so "what changed" is a listing diffed against
+what that folder held last time, persisted so a cold start still knows what was removed. One
+snapshot per folder, not the Mac's five: nothing here replays old sync anchors. An item's version
+is its content hash, so a placeholder whose version still matches needs no work at all; a create
+that finds the name taken refreshes the entry in place, which is also how a folder the portal had
+only declared keeps resolving when it materialises under a real row id.
 
-An item's version is its content hash, so a placeholder whose version still matches needs no work at
-all.
-
-**6. Writes.** `CF_CALLBACK_TYPE_NOTIFY_FILE_CLOSE_COMPLETION` and the rename/delete notifications,
-each mapping to the corresponding `HelmsleyAPI` call. Nothing here is written yet; `NativeMethods.txt`
-will need the matching entries adding before the bindings exist.
+**6. Writes.** Done — `LocalChanges.cs` for the filter's side, the handlers in `Mirror.cs` for the
+portal's. Rename and delete are held by the filter for an acknowledgement, so the portal call runs
+inside the callback and its refusal refuses the local operation — Explorer shows the failure
+instead of letting the trees drift. Every local delete maps to the bin, never the permanent
+delete. What the filter will *not* say had to be learned the hard way and is written down in "What
+the filter actually tells you" below; it is why a debounced `FileSystemWatcher` in `Mirror` is the
+primary detector and the close notification only a helper.
 
 ## Identity, which must not drift
 
@@ -160,6 +165,28 @@ Anything long-running and elevated — installers above all — must go through 
 (`schtasks /RL HIGHEST`) rather than straight over SSH: Windows kills SSH child processes on
 disconnect, and an unelevated installer fails with the un-obvious exit code 1602.
 
+## What the filter actually tells you
+
+Learned in the harness, each the hard way. The engine already copes with all of it; this is so the
+next person believes the code.
+
+- **Notifications are for placeholders only.** An ordinary file — which is what everything a user
+  creates begins as — is written, renamed and deleted in silence. And an overwriting save
+  (`CREATE_ALWAYS`, which is how `cmd`'s `>` and plenty of editors write) strips a placeholder back
+  to an ordinary file, taking its identity with it. Hence the watcher, and hence the rule that
+  bytes wearing a name the folder's snapshot already knows are a save over that row, never a new
+  upload — minting a second row would fork the file.
+- **`TRACK_ALL` clears in-sync for a rename as readily as for a write.** In-sync alone is not
+  "locally modified"; treating it as one had the engine push stale bytes over the portal's newer
+  version. The verdict that means an upload is `ModifiedDataSize > 0` *and* not in sync, read from
+  `CF_PLACEHOLDER_STANDARD_INFO`; a flag cleared by mere metadata motion is quietly set right.
+- **Nothing exempts the provider's own process.** The mirror's renames and deletes come back
+  through the same callbacks as the user's, and even a state query's handle close is reported. The
+  process id on the callback is the filter, everything else is the user.
+- **Do not demand exclusivity to write.** The search indexer and the antimalware scan keep shared
+  handles on anything fresh; `CF_OPEN_FILE_FLAG_WRITE_ACCESS` coexists with them where
+  `CF_OPEN_FILE_FLAG_EXCLUSIVE` loses, and a short sharing-violation retry covers the rest.
+
 ## What CsWin32 actually generates
 
 Worth knowing before writing against the API from memory, because the generated shape is not the C
@@ -173,6 +200,11 @@ one and the differences cost an afternoon:
   holds a static reference for exactly that reason, and dropping it is a use-after-free the GC will
   hand you at the worst moment.
 - `CF_CONNECTION_KEY` is internal to the generated assembly, which is why `SyncConnection` wraps it.
+- `CfOpenFileWithOplock` hands its protected handle out as a plain `SafeFileHandle`, whose disposal
+  runs `CloseHandle` — a silent no-op on the structure a protected handle actually is, leaking the
+  real handle inside and leaving the file locked until the process dies. Only `CfCloseHandle`
+  closes one; `Placeholders.ProtectedHandle` does exactly that and tells the `SafeFileHandle` it
+  already happened. This was an afternoon.
 - Paths want `PCWSTR`; `fixed (char* p = s)` is the shortest way there.
 - Target `net8.0-windows10.0.17763.0` or later, or every call raises CA1416.
 
