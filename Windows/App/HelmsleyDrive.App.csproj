@@ -1,6 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <!-- WinExe is the GUI subsystem: no console window ever opens. The engine's narration still
+         goes through Console.* and lands in app.log (see Program.RedirectConsoleToLog); the CLI
+         flags attach to the parent's console when there is one. -->
+    <OutputType>WinExe</OutputType>
+    <UseWPF>true</UseWPF>
     <TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>
     <RootNamespace>HelmsleyDrive.App</RootNamespace>
     <Nullable>enable</Nullable>

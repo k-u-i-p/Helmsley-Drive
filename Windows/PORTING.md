@@ -151,14 +151,19 @@ ssh helmsley-vm 'cd C:\Users\Ben\Helmsley-Drive\Windows; dotnet build'
 
 `HelmsleyDrive.sln` is committed, so nothing needs generating first.
 
-Running it registers `%USERPROFILE%\Helmsley Drive` as a sync root and mirrors the stub tree. It
-holds the console until Ctrl+C, which over SSH means running it in the background and killing it
-afterwards rather than waiting on it:
+Running it registers `%USERPROFILE%\Helmsley Drive` as a sync root and mirrors the tree. The app
+is now a WPF window (`WinExe`, so no console ever opens); over SSH there is no desktop for that
+window, so headless runs use `--console`, which holds the console until Ctrl+C — over SSH that
+means running it in the background and killing it afterwards rather than waiting on it:
 
 ```
-dotnet run --project App
+dotnet run --project App -- --console
 dotnet run --project App -- --unregister
 ```
+
+In windowed mode the engine's `Console.*` narration is redirected to
+`%LOCALAPPDATA%\Helmsley Drive\app.log`, one log per run, which is where to look when Explorer
+misbehaves and there is no console to have watched.
 
 The stub-era sync root is unregistered and its tree set aside at
 `%USERPROFILE%\Helmsley Drive.stub-tree` (delete it when done with it), so the first real-portal

@@ -13,7 +13,7 @@ CloudFilter/            the engine, as a library
   Hydrator.cs           FETCH_DATA — an opened placeholder gets its bytes
   RemoteStore.cs        the slice of the portal the engine needs; HelmsleyAPI.swift's port goes here
   NativeMethods.txt     the cldapi surface; CsWin32 generates the bindings at build time
-App/                    console host for now, tray app later; includes a stub in-memory portal
+App/                    the windowed host — sign in, mount, and the engine in-process; tray app later
 ```
 
 Identity carries over from the Mac side unchanged: an item is its portal row id, stamped on each
@@ -28,6 +28,12 @@ dotnet build
 dotnet run --project App
 ```
 
-First run registers `%USERPROFILE%\Helmsley Drive` as a sync root and fills it with a stub tree;
-opening any file in Explorer exercises hydration. `dotnet run --project App -- --unregister` removes
-the registration again.
+The app is a small status window like the Mac one — no console. It signs in through the browser if
+it must, registers `%USERPROFILE%\Helmsley Drive` as a sync root, and mirrors the portal's tree for
+as long as the window is open; there is no extension process on Windows, so closing the window is
+what stops the drive answering. The engine's narration goes to
+`%LOCALAPPDATA%\Helmsley Drive\app.log`, one log per run.
+
+Three flags for development, all console-facing: `--console` runs the old headless host (the right
+shape over SSH, where a window has no desktop), `--unregister` removes the sync-root registration,
+and `--sign-out` clears the credential and the snapshots.
