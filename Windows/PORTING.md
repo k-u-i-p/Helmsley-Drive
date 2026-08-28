@@ -180,9 +180,18 @@ next person believes the code.
   "locally modified"; treating it as one had the engine push stale bytes over the portal's newer
   version. The verdict that means an upload is `ModifiedDataSize > 0` *and* not in sync, read from
   `CF_PLACEHOLDER_STANDARD_INFO`; a flag cleared by mere metadata motion is quietly set right.
-- **Nothing exempts the provider's own process.** The mirror's renames and deletes come back
-  through the same callbacks as the user's, and even a state query's handle close is reported. The
-  process id on the callback is the filter, everything else is the user.
+- **Notifications do not exempt the provider's own process — population does.** The mirror's
+  renames and deletes come back through the same callbacks as the user's, and even a state query's
+  handle close is reported; the process id on the callback is what tells the mirror's work from
+  the user's. But FETCH_PLACEHOLDERS is never sent for the provider's own accesses: the engine's
+  own enumeration of an unpopulated directory sees it raw and empty. Explorer is a foreign process
+  so users never notice, and the harness has to "look" through a `cmd` child for the same reason —
+  but nothing in the engine may assume its own `Directory.Enumerate` populates anything.
+- **Population is on demand, root included.** The registration is `CF_POPULATION_POLICY_PARTIAL`:
+  opening the drive costs nothing, a folder's entries are fetched (`Populator`) the first time a
+  foreign process looks inside it, and that listing becomes the folder's snapshot — "materialised"
+  — which is what admits it to the poll. The sync pass walks materialised folders only, so the
+  portal answers for what is being watched, never for everything it holds.
 - **Do not demand exclusivity to write.** The search indexer and the antimalware scan keep shared
   handles on anything fresh; `CF_OPEN_FILE_FLAG_WRITE_ACCESS` coexists with them where
   `CF_OPEN_FILE_FLAG_EXCLUSIVE` loses, and a short sharing-violation retry covers the rest.
