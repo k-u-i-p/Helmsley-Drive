@@ -1,8 +1,17 @@
 using HelmsleyDrive.App;
 using HelmsleyDrive.CloudFilter;
 
-// A console host for now: register, connect, mirror the stub tree, serve hydration until Ctrl+C.
-// The tray app this becomes will do the same four things behind an icon.
+// A console host for now: sign in if needed, register, connect, mirror the portal tree, serve
+// hydration until Ctrl+C. The tray app this becomes will do the same things behind an icon.
+
+// The browser's OAuth redirect launches a second instance of this app with the callback URL as an
+// argument; its whole job is to hand that to the instance that is waiting, and exit.
+var callback = args.FirstOrDefault(a => a.StartsWith("helmsley-drive:", StringComparison.OrdinalIgnoreCase));
+if (callback is not null)
+{
+    SignIn.RelayCallback(callback);
+    return;
+}
 
 var root = args.FirstOrDefault(a => !a.StartsWith("--"))
     ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Helmsley Drive");
@@ -14,15 +23,28 @@ if (args.Contains("--unregister"))
     return;
 }
 
+if (args.Contains("--sign-out"))
+{
+    TokenProvider.Shared.SignOut();
+    Console.WriteLine("Signed out. The next run will ask again.");
+    return;
+}
+
+if (!TokenProvider.Shared.IsSignedIn)
+    await SignIn.Run();
+
+var admin = await HelmsleyApi.Shared.Whoami();
+Console.WriteLine($"Signed in to {Configuration.BaseUri.Host} as {admin.Name ?? admin.Email ?? $"admin {admin.Id}"}");
+
 Directory.CreateDirectory(root);
 SyncRoot.Register(root);
 
-var store = new StubRemoteStore();
+var store = new HelmsleyRemoteStore();
 var key = SyncRoot.Connect(root, store);
 Console.WriteLine($"Connected: {root}");
 
 await Mirror(store, null, root);
-Console.WriteLine("Stub tree mirrored. Open it in Explorer; Ctrl+C disconnects (and leaves the root registered — run with --unregister to remove it).");
+Console.WriteLine("Portal tree mirrored. Open it in Explorer; Ctrl+C disconnects (and leaves the root registered — run with --unregister to remove it).");
 
 var quit = new TaskCompletionSource();
 Console.CancelKeyPress += (_, e) => { e.Cancel = true; quit.TrySetResult(); };

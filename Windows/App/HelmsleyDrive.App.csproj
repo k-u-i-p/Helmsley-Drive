@@ -9,4 +9,8 @@
   <ItemGroup>
     <ProjectReference Include="..\CloudFilter\HelmsleyDrive.CloudFilter.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- DPAPI, which seals the token set to the signed-in Windows user (TokenStore.cs). -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+  </ItemGroup>
 </Project>
