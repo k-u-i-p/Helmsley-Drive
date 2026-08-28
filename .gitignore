@@ -14,3 +14,8 @@ build/
 # having — and it signs pushes for every app of the team, so it is not worth committing. The
 # deployed copy is the PEM inside the portal's own gitignored config.json.
 *.p8
+
+# .NET build output, under Windows/.
+bin/
+obj/
+.vs/
