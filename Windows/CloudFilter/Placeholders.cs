@@ -211,8 +211,11 @@ public static unsafe class Placeholders
 
         public static ProtectedHandle Open(string path, bool exclusive)
         {
+            // Write access rather than an exclusive oplock: the search indexer and the malware
+            // scan keep long-lived shared read handles on anything fresh, and an exclusivity
+            // demand loses to every one of them. Writing needs none of it.
             var flags = exclusive
-                ? CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_EXCLUSIVE
+                ? CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_WRITE_ACCESS
                 : CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_NONE;
             PInvoke.CfOpenFileWithOplock(path, flags, out var handle).ThrowOnFailure();
             return new ProtectedHandle

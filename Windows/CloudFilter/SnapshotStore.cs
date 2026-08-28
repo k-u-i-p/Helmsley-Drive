@@ -116,6 +116,21 @@ public sealed class SnapshotStore
         }
     }
 
+    /// <summary>
+    /// The row last known to answer to a name in a folder. It is how bytes that arrive with no
+    /// identity — an overwrite that stripped the placeholder, a copy dropped over a file — are
+    /// recognised as a save over an existing row rather than mistaken for something new.
+    /// </summary>
+    public RemoteItem? FindByName(string? folderId, string name)
+    {
+        lock (_lock)
+        {
+            return _folders.TryGetValue(folderId ?? "", out var items)
+                ? items.Values.FirstOrDefault(i => string.Equals(i.Name, name, StringComparison.OrdinalIgnoreCase))
+                : null;
+        }
+    }
+
     /// <summary>Wipes everything — for a sign-out, after which nothing remembered is about an account still mirrored.</summary>
     public void ForgetEverything()
     {

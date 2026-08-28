@@ -15,7 +15,7 @@ namespace HelmsleyDrive.CloudFilter;
 /// and then adjusts the snapshot, so the next pass does not mistake the echo of a local write for
 /// a remote change to act on.
 /// </summary>
-public sealed class Mirror
+public sealed class Mirror : IDisposable
 {
     readonly IRemoteStore _remote;
     readonly string _root;
@@ -23,6 +23,10 @@ public sealed class Mirror
 
     // One pass at a time; a second ask while one runs is the same ask.
     readonly SemaphoreSlim _pass = new(1, 1);
+
+    // One folder minted at a time: a directory and its first file arrive as separate events, and
+    // without the gate both would find no placeholder and mint the portal two rows for one folder.
+    readonly SemaphoreSlim _minting = new(1, 1);
 
     // Paths with an upload in flight, so a burst of close events — apps save in flurries — costs
     // one transfer rather than one per event.
@@ -33,6 +37,53 @@ public sealed class Mirror
         _remote = remote;
         _root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
         _snapshots = new SnapshotStore(snapshotPath);
+    }
+
+    // MARK: - Hearing about local changes at all
+    //
+    // The filter only speaks of placeholders: an ordinary file — which is what everything a user
+    // creates begins as, and what an overwriting save can quietly turn a placeholder back into —
+    // is closed, renamed and deleted in silence. So the primary detector is a filesystem watcher,
+    // debounced until a path has been quiet for a moment; the filter's close notification stays
+    // registered for the placeholder saves it does report, and both funnel into OnClosed, which
+    // decides everything from on-disk state rather than from which messenger arrived first.
+
+    FileSystemWatcher? _watcher;
+    readonly ConcurrentDictionary<string, DateTime> _touched = new(StringComparer.OrdinalIgnoreCase);
+
+    public void StartWatching()
+    {
+        _watcher = new FileSystemWatcher(_root) { IncludeSubdirectories = true, InternalBufferSize = 64 * 1024 };
+        _watcher.Created += (_, e) => _touched[e.FullPath] = DateTime.UtcNow;
+        _watcher.Changed += (_, e) => _touched[e.FullPath] = DateTime.UtcNow;
+        _watcher.Renamed += (_, e) => _touched[e.FullPath] = DateTime.UtcNow;
+        _watcher.Error += (_, e) =>
+            Console.Error.WriteLine($"watcher overwhelmed, local changes may sit until touched again: {e.GetException().Message}");
+        _watcher.EnableRaisingEvents = true;
+        _ = Task.Run(DrainTouched);
+    }
+
+    async Task DrainTouched()
+    {
+        while (_watcher is { EnableRaisingEvents: true })
+        {
+            await Task.Delay(500);
+            foreach (var (path, at) in _touched)
+            {
+                // Still being written to — a copy in progress touches its path continuously —
+                // or our own placeholder work echoing back; both settle, and settled is when the
+                // on-disk state is worth reading.
+                if (DateTime.UtcNow - at < TimeSpan.FromSeconds(1.5)) continue;
+                if (_touched.TryRemove(path, out _))
+                    _ = Task.Run(() => OnClosed(path));
+            }
+        }
+    }
+
+    public void Dispose()
+    {
+        _watcher?.Dispose();
+        _watcher = null;
     }
 
     public bool IsUnderRoot(string path) =>
@@ -207,12 +258,32 @@ public sealed class Mirror
         try
         {
             var parentId = await EnsureRemoteFolder(Path.GetDirectoryName(path)!);
-            var row = await _remote.Upload(parentId, Path.GetFileName(path), path);
+
+            // An ordinary file wearing a name the folder's last listing already had is not new —
+            // it is a save that shed its placeholder, an overwriting CREATE_ALWAYS above all. The
+            // bytes replace the known row and the identity goes back on; minting a second row
+            // would fork the file.
+            var known = _snapshots.FindByName(parentId, Path.GetFileName(path));
+            var row = known is { IsFolder: false }
+                ? await ReplaceKnown(known.Id, path)
+                : await _remote.Upload(parentId, Path.GetFileName(path), path);
+
             Placeholders.Convert(path, row.Id);
             _snapshots.NoteItem(parentId, row);
-            Console.WriteLine($"^ {path} (new, {row.Id})");
+            Console.WriteLine($"^ {path} ({(known is null ? "new, " : "")}{row.Id})");
         }
         finally { _uploading.TryRemove(path, out _); }
+    }
+
+    async Task<RemoteItem> ReplaceKnown(string id, string path)
+    {
+        try { return await _remote.ReplaceContents(id, path); }
+        catch (Exception e) when (_remote.IsNotFound(e))
+        {
+            // The row went while the bytes were local-only. They are still the newest anywhere;
+            // they go up as the new file they have effectively become.
+            return await _remote.Upload(ParentFolderId(path), Path.GetFileName(path), path);
+        }
     }
 
     async Task UploadChanged(string path)
@@ -253,11 +324,18 @@ public sealed class Mirror
     /// </summary>
     async Task<string?> EnsureRemoteFolder(string directory)
     {
+        await _minting.WaitAsync();
+        try { return await MintFolders(directory); }
+        finally { _minting.Release(); }
+    }
+
+    async Task<string?> MintFolders(string directory)
+    {
         directory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
         if (PathsEqual(directory, _root)) return null;
         if (Placeholders.TryGetState(directory) is { } state) return state.Id;
 
-        var parentId = await EnsureRemoteFolder(Path.GetDirectoryName(directory)!);
+        var parentId = await MintFolders(Path.GetDirectoryName(directory)!);
         var row = await _remote.CreateFolder(parentId, Path.GetFileName(directory));
         Placeholders.Convert(directory, row.Id);
         _snapshots.NoteItem(parentId, row);

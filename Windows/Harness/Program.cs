@@ -31,6 +31,7 @@ Directory.CreateDirectory(root);
 SyncRoot.Register(root);
 var mirror = new Mirror(portal, root, snapshotPath);
 var key = SyncRoot.Connect(root, portal, mirror);
+mirror.StartWatching();
 
 try
 {
@@ -115,6 +116,7 @@ try
 }
 finally
 {
+    mirror.Dispose();
     SyncRoot.Disconnect(key);
     SyncRoot.Unregister(root);
     Directory.Delete(root, recursive: true);

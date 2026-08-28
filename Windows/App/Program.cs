@@ -47,6 +47,7 @@ SyncRoot.Register(root);
 var store = new HelmsleyRemoteStore();
 var mirror = new Mirror(store, root, snapshotPath);
 var key = SyncRoot.Connect(root, store, mirror);
+mirror.StartWatching();
 Console.WriteLine($"Connected: {root}");
 
 await mirror.SyncPass();
@@ -69,4 +70,5 @@ while (!quit.IsCancellationRequested)
     }
 }
 
+mirror.Dispose();
 SyncRoot.Disconnect(key);
