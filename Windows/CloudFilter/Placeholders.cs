@@ -5,8 +5,16 @@ using Windows.Win32.Storage.CloudFilters;
 
 namespace HelmsleyDrive.CloudFilter;
 
-/// <summary>What a placeholder on disk says about itself: whose row it is, and whether its bytes agree with the portal's.</summary>
-public sealed record PlaceholderState(string Id, bool InSync);
+/// <summary>
+/// What a placeholder on disk says about itself: whose row it is, and how it stands. In-sync alone
+/// is not a verdict — the platform clears it for a rename as readily as for a write — so whether
+/// the *bytes* differ is carried separately, and only the two together mean a save to upload.
+/// </summary>
+public sealed record PlaceholderState(string Id, bool InSync, bool DataModified)
+{
+    /// <summary>Local bytes the portal has not seen. The one state that means an upload.</summary>
+    public bool DataDirty => DataModified && !InSync;
+}
 
 /// <summary>
 /// Turns remote listings into placeholders and keeps them true: real directory entries with the
@@ -116,7 +124,7 @@ public static unsafe class Placeholders
     static void UpdateOnce(string path, RemoteItem item, bool dehydrate)
     {
         using var handle = ProtectedHandle.Open(path, exclusive: true);
-        if (!ReadState(handle).InSync) return;
+        if (ReadState(handle).DataDirty) return;
 
         long filetime = item.Modified.ToFileTime();
         var metadata = new CF_FS_METADATA();
@@ -182,20 +190,22 @@ public static unsafe class Placeholders
 
     static PlaceholderState ReadState(ProtectedHandle handle)
     {
-        // CF_PLACEHOLDER_BASIC_INFO, read at documented offsets rather than through the generated
-        // struct, whose trailing variable-length identity does not project into C# usefully:
-        // PinState 0, InSyncState 4, FileId 8, SyncRootFileId 16, FileIdentityLength 24,
-        // FileIdentity from 28 — the UTF-16 bytes CreateOne stamped.
+        // CF_PLACEHOLDER_STANDARD_INFO, read at documented offsets rather than through the
+        // generated struct, whose trailing variable-length identity does not project into C#
+        // usefully: OnDiskDataSize 0, ValidatedDataSize 8, ModifiedDataSize 16, PropertiesSize 24,
+        // PinState 32, InSyncState 36, FileId 40, SyncRootFileId 48, FileIdentityLength 56,
+        // FileIdentity from 60 — the UTF-16 bytes CreateOne stamped.
         var buffer = stackalloc byte[512];
         uint returned;
         PInvoke.CfGetPlaceholderInfo(handle.Win32Handle,
-            CF_PLACEHOLDER_INFO_CLASS.CF_PLACEHOLDER_INFO_BASIC,
+            CF_PLACEHOLDER_INFO_CLASS.CF_PLACEHOLDER_INFO_STANDARD,
             buffer, 512, &returned).ThrowOnFailure();
 
-        var inSync = *(int*)(buffer + 4) == (int)CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC;
-        var identityLength = *(uint*)(buffer + 24);
-        var id = new string((char*)(buffer + 28), 0, (int)(identityLength / sizeof(char)));
-        return new PlaceholderState(id, inSync);
+        var modified = *(long*)(buffer + 16);
+        var inSync = *(int*)(buffer + 36) == (int)CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC;
+        var identityLength = *(uint*)(buffer + 56);
+        var id = new string((char*)(buffer + 60), 0, (int)(identityLength / sizeof(char)));
+        return new PlaceholderState(id, inSync, modified > 0);
     }
 
     /// <summary>

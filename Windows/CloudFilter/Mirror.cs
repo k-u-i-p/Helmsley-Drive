@@ -155,11 +155,16 @@ public sealed class Mirror : IDisposable
                 }
 
                 // A placeholder still holding an unsynced local write is a save whose upload
-                // failed or never ran; the pass is its retry.
+                // failed or never ran; the pass is its retry. One cleared by mere metadata
+                // motion — a rename clears in-sync as readily as a write — is set right instead,
+                // or it would wear a pending badge forever.
                 var path = Path.Combine(directory, item.Name);
                 if (!item.IsFolder && File.Exists(path)
-                    && Placeholders.TryGetState(path) is { InSync: false })
-                    await UploadChanged(path);
+                    && Placeholders.TryGetState(path) is { } standing)
+                {
+                    if (standing.DataDirty) await UploadChanged(path);
+                    else if (!standing.InSync) Placeholders.MarkInSync(path);
+                }
 
                 accomplished.Add(item);
             }
@@ -239,8 +244,11 @@ public sealed class Mirror : IDisposable
                 case null:
                     await UploadNew(path);
                     break;
-                case { InSync: false }:
+                case { DataDirty: true }:
                     await UploadChanged(path);
+                    break;
+                case { InSync: false }:
+                    Placeholders.MarkInSync(path);
                     break;
             }
         }
@@ -292,7 +300,7 @@ public sealed class Mirror : IDisposable
         try
         {
             var state = Placeholders.TryGetState(path);
-            if (state is not { InSync: false }) return;
+            if (state is not { DataDirty: true }) return;
             var row = await _remote.ReplaceContents(state.Id, path);
             Placeholders.MarkInSync(path);
             _snapshots.NoteItem(ParentFolderId(path), row);
