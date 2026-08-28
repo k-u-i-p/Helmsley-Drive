@@ -11,6 +11,11 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <!-- The desktop SDK drops this from the implicit set; HelmsleyApi and OAuth were written
+         against the plain SDK's, where it is standard. -->
+    <Using Include="System.Net.Http" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\CloudFilter\HelmsleyDrive.CloudFilter.csproj" />
   </ItemGroup>
   <ItemGroup>
