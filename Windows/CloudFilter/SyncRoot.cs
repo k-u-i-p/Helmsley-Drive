@@ -56,9 +56,10 @@ public static unsafe class SyncRoot
     // reference is what keeps the GC from collecting them out from under it.
     static CF_CALLBACK_REGISTRATION[]? _callbacks;
 
-    public static SyncConnection Connect(string path, IRemoteStore store)
+    public static SyncConnection Connect(string path, IRemoteStore store, Mirror mirror)
     {
         Hydrator.Store = store;
+        LocalChanges.Mirror = mirror;
 
         _callbacks = new CF_CALLBACK_REGISTRATION[]
         {
@@ -71,6 +72,28 @@ public static unsafe class SyncRoot
             {
                 Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_CANCEL_FETCH_DATA,
                 Callback = Hydrator.OnCancelFetchData,
+            },
+            // The local write path: saves and creates announce themselves as closes, and renames
+            // and deletes are held by the filter until LocalChanges answers for the portal.
+            new()
+            {
+                Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_FILE_CLOSE_COMPLETION,
+                Callback = LocalChanges.OnCloseCompletion,
+            },
+            new()
+            {
+                Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_RENAME,
+                Callback = LocalChanges.OnRename,
+            },
+            new()
+            {
+                Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_RENAME_COMPLETION,
+                Callback = LocalChanges.OnRenameCompletion,
+            },
+            new()
+            {
+                Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_DELETE,
+                Callback = LocalChanges.OnDelete,
             },
             new() { Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NONE },
         };

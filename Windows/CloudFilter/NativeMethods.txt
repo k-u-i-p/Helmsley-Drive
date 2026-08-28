@@ -5,3 +5,10 @@ CfConnectSyncRoot
 CfDisconnectSyncRoot
 CfCreatePlaceholders
 CfExecute
+CfOpenFileWithOplock
+CfCloseHandle
+CfGetWin32HandleFromProtectedHandle
+CfGetPlaceholderInfo
+CfUpdatePlaceholder
+CfConvertToPlaceholder
+CfSetInSyncState

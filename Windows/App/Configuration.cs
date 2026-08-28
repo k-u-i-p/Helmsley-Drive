@@ -29,7 +29,15 @@ public static class Configuration
     /// </summary>
     public const string OAuthRedirectUri = "helmsley-drive://oauth/callback";
 
-    /// <summary>Where this app keeps what it must keep — the token set, for now.</summary>
+    /// <summary>Where this app keeps what it must keep — the token set and the mirror's snapshots.</summary>
     public static string DataDirectory =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Helmsley Drive");
+
+    /// <summary>
+    /// How often the whole tree is re-listed. The portal has no change feed and Windows has no
+    /// push yet (PORTING.md reserves that question), so polling is the only way remote changes
+    /// arrive. The Mac asks every 30 seconds — but only for folders someone is looking at; this
+    /// walks everything, one request per folder, so it goes gentler on the portal.
+    /// </summary>
+    public static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(5);
 }

@@ -1,8 +1,9 @@
 using HelmsleyDrive.App;
 using HelmsleyDrive.CloudFilter;
 
-// A console host for now: sign in if needed, register, connect, mirror the portal tree, serve
-// hydration until Ctrl+C. The tray app this becomes will do the same things behind an icon.
+// A console host for now: sign in if needed, register, connect, then keep the mirror true — a
+// sync pass at start and on a timer, and the write callbacks in between — until Ctrl+C. The tray
+// app this becomes will do the same things behind an icon.
 
 // The browser's OAuth redirect launches a second instance of this app with the callback URL as an
 // argument; its whole job is to hand that to the instance that is waiting, and exit.
@@ -15,6 +16,7 @@ if (callback is not null)
 
 var root = args.FirstOrDefault(a => !a.StartsWith("--"))
     ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Helmsley Drive");
+var snapshotPath = Path.Combine(Configuration.DataDirectory, "snapshot.json");
 
 if (args.Contains("--unregister"))
 {
@@ -26,6 +28,9 @@ if (args.Contains("--unregister"))
 if (args.Contains("--sign-out"))
 {
     TokenProvider.Shared.SignOut();
+    // The snapshots describe the signed-out account's tree; remembering them into the next
+    // account's mirror would have the first pass "deleting" files that were never theirs.
+    try { File.Delete(snapshotPath); } catch (DirectoryNotFoundException) { }
     Console.WriteLine("Signed out. The next run will ask again.");
     return;
 }
@@ -40,24 +45,28 @@ Directory.CreateDirectory(root);
 SyncRoot.Register(root);
 
 var store = new HelmsleyRemoteStore();
-var key = SyncRoot.Connect(root, store);
+var mirror = new Mirror(store, root, snapshotPath);
+var key = SyncRoot.Connect(root, store, mirror);
 Console.WriteLine($"Connected: {root}");
 
-await Mirror(store, null, root);
-Console.WriteLine("Portal tree mirrored. Open it in Explorer; Ctrl+C disconnects (and leaves the root registered — run with --unregister to remove it).");
+await mirror.SyncPass();
+Console.WriteLine($"Mirrored. Watching for local changes; polling the portal every {Configuration.PollInterval.TotalMinutes:0} minutes. " +
+    "Ctrl+C disconnects (and leaves the root registered — run with --unregister to remove it).");
 
-var quit = new TaskCompletionSource();
-Console.CancelKeyPress += (_, e) => { e.Cancel = true; quit.TrySetResult(); };
-await quit.Task;
+var quit = new CancellationTokenSource();
+Console.CancelKeyPress += (_, e) => { e.Cancel = true; quit.Cancel(); };
+
+while (!quit.IsCancellationRequested)
+{
+    try { await Task.Delay(Configuration.PollInterval, quit.Token); }
+    catch (OperationCanceledException) { break; }
+
+    try { await mirror.SyncPass(); }
+    catch (Exception e)
+    {
+        // A failed pass changes nothing on disk; the next one starts from the same snapshot.
+        Console.Error.WriteLine($"sync pass failed: {e.Message}");
+    }
+}
 
 SyncRoot.Disconnect(key);
-
-async Task Mirror(IRemoteStore remote, string? folderId, string directory)
-{
-    var items = await remote.List(folderId);
-    // Mirroring over an existing tree fails on the already-created entries; first run only, for now.
-    // The port of the Mac side's snapshot diffing (FileProvider/SnapshotStore.swift) replaces this.
-    Placeholders.Create(directory, items);
-    foreach (var item in items.Where(i => i.IsFolder))
-        await Mirror(remote, item.Id, Path.Combine(directory, item.Name));
-}
