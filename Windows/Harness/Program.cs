@@ -38,7 +38,7 @@ try
     // MARK: Portal to disk
 
     await mirror.SyncPass();
-    Check("startup costs one listing: the root", portal.Log.Count == 1 && portal.Log[0] == "list /");
+    Check("startup asks the portal for nothing", portal.Log.Count == 0);
 
     // Enumerating is what Explorer does when a folder is opened, and enumeration of an
     // unpopulated directory is what triggers FETCH_PLACEHOLDERS — a bare path lookup may not.
@@ -173,12 +173,9 @@ string? TryRead(string path)
     catch (Exception e) { Console.WriteLine($"  read {path}: {e.Message}"); return null; }
 }
 
-// Opening a folder, as Explorer does it: a full enumeration of the directory.
-void Look(string directory)
-{
-    try { _ = Directory.EnumerateFileSystemEntries(directory).ToList(); }
-    catch (Exception e) { Console.WriteLine($"  look at {directory}: {e.Message}"); }
-}
+// Opening a folder, as Explorer does it: an enumeration — and from a foreign process, because
+// the filter never asks the provider to populate for the provider's own accesses.
+void Look(string directory) => Run($"dir \"{directory}\" >nul");
 
 void Probe(string path)
 {
