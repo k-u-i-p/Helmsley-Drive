@@ -172,7 +172,18 @@ confuse the results.
 
 Anything long-running and elevated — installers above all — must go through a scheduled task
 (`schtasks /RL HIGHEST`) rather than straight over SSH: Windows kills SSH child processes on
-disconnect, and an unelevated installer fails with the un-obvious exit code 1602.
+disconnect, and an unelevated installer fails with the un-obvious exit code 1602. The same trick
+with `/it` instead runs a program on the logged-in desktop (session 1), which is how to see the
+window from an SSH session that has no desktop of its own; pair it with a second `/it` task that
+`CopyFromScreen`s to a PNG — after `SetProcessDPIAware()`, or the capture is a crop of the top-left
+corner at the VM's 200% scaling.
+
+WPF's hardware rendering draws a blank white client area on VMware's virtual GPU — the visual tree
+is sound (UI Automation sees every control in place) and only the paint is missing, so it looks
+exactly like a layout bug and is not one. The app forces
+`RenderOptions.ProcessRenderMode = SoftwareOnly` for everyone: a status window this size has no
+rendering load, and a real machine with a driver in the same mood would otherwise show the same
+white sheet.
 
 ## What the filter actually tells you
 

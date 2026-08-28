@@ -40,7 +40,7 @@ public sealed class MainWindow : Window
 
         Title = "Helmsley Drive";
         Width = 480;
-        Height = 400;
+        Height = 340;
         ResizeMode = ResizeMode.CanMinimize;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = SystemColors.WindowBrush;

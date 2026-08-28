@@ -75,6 +75,11 @@ static class Program
 
         RedirectConsoleToLog();
 
+        // Software rendering, always: WPF's hardware path drew this window as a blank white sheet
+        // on VMware's virtual GPU while the visual tree underneath was perfectly sound, and a
+        // status window this size has no rendering load worth a driver lottery.
+        System.Windows.Media.RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
+
         var model = new AppModel(root, snapshotPath);
         var window = new MainWindow(model);
         window.Closed += (_, _) => model.Shutdown();
