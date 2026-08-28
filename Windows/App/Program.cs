@@ -16,7 +16,13 @@ if (callback is not null)
 
 var root = args.FirstOrDefault(a => !a.StartsWith("--"))
     ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Helmsley Drive");
-var snapshotPath = Path.Combine(Configuration.DataDirectory, "snapshot.json");
+
+// Named for the root it describes: two instances on two roots — the real drive and a probe —
+// must not share one memory of "what each folder held", or each mistakes the other's listings
+// for work already done.
+var rootKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+    System.Text.Encoding.Unicode.GetBytes(Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)).ToUpperInvariant())))[..16];
+var snapshotPath = Path.Combine(Configuration.DataDirectory, $"snapshot-{rootKey}.json");
 
 if (args.Contains("--unregister"))
 {
@@ -28,9 +34,12 @@ if (args.Contains("--unregister"))
 if (args.Contains("--sign-out"))
 {
     TokenProvider.Shared.SignOut();
-    // The snapshots describe the signed-out account's tree; remembering them into the next
-    // account's mirror would have the first pass "deleting" files that were never theirs.
-    try { File.Delete(snapshotPath); } catch (DirectoryNotFoundException) { }
+    // The snapshots describe the signed-out account's tree — every root's of them; remembering
+    // them into the next account's mirror would have the first pass "deleting" files that were
+    // never theirs.
+    if (Directory.Exists(Configuration.DataDirectory))
+        foreach (var snapshot in Directory.EnumerateFiles(Configuration.DataDirectory, "snapshot*.json"))
+            File.Delete(snapshot);
     Console.WriteLine("Signed out. The next run will ask again.");
     return;
 }

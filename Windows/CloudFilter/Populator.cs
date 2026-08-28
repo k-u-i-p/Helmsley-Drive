@@ -31,7 +31,7 @@ public static unsafe class Populator
         {
             // Blocking the callback is the design: whoever opened the folder is waiting on this
             // listing, and Explorer shows them the wait.
-            listing = Store!.List(folderId).GetAwaiter().GetResult();
+            listing = LocalNames.Legalise(Store!.List(folderId).GetAwaiter().GetResult());
         }
         catch (Exception e)
         {

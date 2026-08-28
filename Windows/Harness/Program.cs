@@ -58,6 +58,7 @@ try
         TryRead(Path.Combine(root, "Docs", "a.txt")) == "the first version of a");
 
     portal.AddFile(docs, "later.txt", "arrived later");
+    portal.AddFile(docs, "Report: draft*.txt", "illegally named bytes");
     portal.RenameRemotely(a, "a renamed.txt");
     portal.ReplaceBytes(a, "the second version of a");
     var doomed = portal.AddFile(null, "doomed.txt", "soon gone");
@@ -72,6 +73,8 @@ try
     Probe(Path.Combine(root, "Docs", "a renamed.txt"));
     Check("a changed version re-hydrates to the new bytes",
         TryRead(Path.Combine(root, "Docs", "a renamed.txt")) == "the second version of a");
+    Check("an illegal portal name lands under a legal one",
+        TryRead(Path.Combine(root, "Docs", "Report_ draft_.txt")) == "illegally named bytes");
 
     // MARK: Disk to portal, from a foreign process
 

@@ -128,7 +128,7 @@ public sealed class Mirror : IDisposable
     async Task<IReadOnlyList<RemoteItem>?> RefreshFolder(string? folderId, string directory)
     {
         IReadOnlyList<RemoteItem> listing;
-        try { listing = await _remote.List(folderId); }
+        try { listing = LocalNames.Legalise(await _remote.List(folderId)); }
         catch (Exception e) when (_remote.IsNotFound(e))
         {
             // The folder is gone; the pass over its parent is what deletes it. Nothing to do here.
@@ -174,7 +174,15 @@ public sealed class Mirror : IDisposable
                 {
                     if (!string.Equals(was.Name, item.Name, StringComparison.Ordinal))
                         RenameLocal(directory, was, item);
-                    if (!item.IsFolder && was.Version != item.Version)
+                    if (!Path.Exists(Path.Combine(directory, item.Name)))
+                    {
+                        // The snapshot believes in an entry the disk does not hold — a create
+                        // that failed, a population answered while nothing was listening.
+                        // Recreating it is the self-heal; believing the snapshot is the bug.
+                        Placeholders.CreateOne(directory, item);
+                        Console.WriteLine($"+ {Path.Combine(directory, item.Name)} (recreated)");
+                    }
+                    else if (!item.IsFolder && was.Version != item.Version)
                     {
                         Placeholders.Update(Path.Combine(directory, item.Name), item, dehydrate: true);
                         Console.WriteLine($"~ {Path.Combine(directory, item.Name)}");
@@ -422,7 +430,7 @@ public sealed class Mirror : IDisposable
             if (!string.Equals(oldName, newName, StringComparison.Ordinal))
             {
                 var landed = _remote.Rename(identity, newName).GetAwaiter().GetResult();
-                _snapshots.NoteRenamed(identity, landed);
+                _snapshots.NoteRenamed(identity, LocalNames.Legal(landed));
             }
             return true;
         }
