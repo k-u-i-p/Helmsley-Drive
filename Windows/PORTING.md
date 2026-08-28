@@ -106,8 +106,12 @@ None of that exists here. Polling only is the right first cut; whether Windows g
 question for later, and `PushRegistrar.swift`/`PushTokenStore.swift` should be left unported until
 somebody decides it.
 
-**The provider GUID** in `SyncRoot.cs` is arbitrary but permanent — Windows keys the registration on
-it. Do not regenerate it.
+**The registration identity** is permanent — Windows keys the registration on it, and changing it
+orphans what the shell already knows. It was once a provider GUID in `SyncRoot.cs`; since the move
+to `StorageProviderSyncRootManager` it is the id string `HelmsleyDrive!<SID>!<path-hash>`, whose
+path-hash leg is what lets a harness or probe root register beside the real one. Do not change the
+`HelmsleyDrive` leg or the hashing; `Register` migrates a root carrying the old GUID-keyed
+cldapi-only registration automatically.
 
 ## The dev VM
 
@@ -195,6 +199,15 @@ next person believes the code.
 - **Do not demand exclusivity to write.** The search indexer and the antimalware scan keep shared
   handles on anything fresh; `CF_OPEN_FILE_FLAG_WRITE_ACCESS` coexists with them where
   `CF_OPEN_FILE_FLAG_EXCLUSIVE` loses, and a short sharing-violation retry covers the rest.
+- **`CfRegisterSyncRoot` gives you the filter, not the shell.** A root registered that way works —
+  and mounts as a plain folder in the user's profile, with no entry in Explorer's navigation pane.
+  `StorageProviderSyncRootManager.Register` is the same plumbing plus the shell: the sidebar
+  entry, the status column, the registration under `SyncRootManager` in the registry.
+- **The portal names things Windows cannot.** A real client's folder ends in an asterisk; another
+  carries a colon. A placeholder create for either fails as a silent gap in the tree, so every
+  name from the portal passes through `LocalNames` before it becomes a filename — and a pass
+  recreates any entry the snapshot believes in that the disk does not hold, which is also what
+  heals a folder stuck populated-but-empty by an enumeration nothing answered.
 
 ## What CsWin32 actually generates
 
