@@ -55,7 +55,7 @@ try
     Check("a second pass over an unchanged tree is a no-op that succeeds", true);
 
     Check("hydration serves the fake bytes through FETCH_DATA",
-        File.ReadAllText(Path.Combine(root, "Docs", "a.txt")) == "the first version of a");
+        TryRead(Path.Combine(root, "Docs", "a.txt")) == "the first version of a");
 
     portal.AddFile(docs, "later.txt", "arrived later");
     portal.RenameRemotely(a, "a renamed.txt");
@@ -71,7 +71,7 @@ try
         && !File.Exists(Path.Combine(root, "doomed.txt")));
     Probe(Path.Combine(root, "Docs", "a renamed.txt"));
     Check("a changed version re-hydrates to the new bytes",
-        File.ReadAllText(Path.Combine(root, "Docs", "a renamed.txt")) == "the second version of a");
+        TryRead(Path.Combine(root, "Docs", "a renamed.txt")) == "the second version of a");
 
     // MARK: Disk to portal, from a foreign process
 
@@ -165,6 +165,12 @@ void Run(string command)
     cmd.WaitForExit();
     Console.WriteLine($"  $ {command}" + (cmd.ExitCode == 0 ? "" : $"  => exit {cmd.ExitCode}"));
     if (output.Length > 0) Console.WriteLine($"    {output.ReplaceLineEndings("\n    ")}");
+}
+
+string? TryRead(string path)
+{
+    try { return File.ReadAllText(path); }
+    catch (Exception e) { Console.WriteLine($"  read {path}: {e.Message}"); return null; }
 }
 
 // Opening a folder, as Explorer does it: a full enumeration of the directory.

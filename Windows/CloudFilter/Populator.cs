@@ -24,6 +24,7 @@ public static unsafe class Populator
         string? folderId = null;
         if (info->FileIdentity is not null && info->FileIdentityLength > 0)
             folderId = new string((char*)info->FileIdentity, 0, (int)(info->FileIdentityLength / sizeof(char)));
+        if (LocalChanges.Trace) Console.WriteLine($"  [fetch-placeholders] {folderId ?? "/"}");
 
         IReadOnlyList<RemoteItem> listing;
         try
