@@ -26,11 +26,17 @@ final class AppModel: ObservableObject {
 
     // MARK: - Lifecycle
 
-    /// Called when the window appears: works out whether the stored credential is still good and
-    /// whether the volume is still registered, since either can have changed while the app was shut.
+    /// Called when the window appears and whenever the app comes back to the front: works out
+    /// whether the stored credential is still good and whether the volume is still registered,
+    /// since either can have changed while the app was shut — or, for the credential, while it sat
+    /// behind another window. The extension signs out in its own process when the grant dies, and
+    /// the keychain is the only place it can say so.
     func refresh() async {
         isMounted = await Self.domainExists()
 
+        // From the keychain, not this process's memory of it — the app's own cached access token
+        // can vouch for a sign-in the extension has since revoked.
+        await TokenProvider.shared.resync()
         guard await TokenProvider.shared.isSignedIn else {
             admin = nil
             return
@@ -49,6 +55,16 @@ final class AppModel: ObservableObject {
     }
 
     // MARK: - Actions
+
+    /// Where Finder's own Sign In button lands: the file provider UI extension answers the click by
+    /// opening `helmsley-drive://signin`, and the app takes that as the click it was — straight into
+    /// the sign-in sheet, not a window the user must find the button in. Signed in already means the
+    /// click was stale (the other process may have recovered), so the window just shows the truth.
+    func signInFromSystem() async {
+        await refresh()
+        guard !isSignedIn else { return }
+        await connect()
+    }
 
     func connect() async {
         await perform {

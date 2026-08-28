@@ -3,6 +3,7 @@ import SwiftUI
 struct ContentView: View {
 
     @StateObject private var model = AppModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
@@ -15,6 +16,13 @@ struct ContentView: View {
             .listStyle(.insetGrouped)
             .navigationTitle("Helmsley Drive")
             .task { await model.refresh() }
+            // Re-checked on every return to the foreground, because the extension signs out in a
+            // different process: without this the screen goes on saying whatever was true when it
+            // last drew.
+            .onChange(of: scenePhase) { _, phase in
+                guard phase == .active else { return }
+                Task { await model.refresh() }
+            }
         }
     }
 

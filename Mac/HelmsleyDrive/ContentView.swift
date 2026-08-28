@@ -30,6 +30,18 @@ struct ContentView: View {
         .padding(24)
         .frame(width: 460, height: 340)
         .task { await model.refresh() }
+        // Re-checked every time the app comes to the front, because the extension signs out in a
+        // different process: without this the window goes on saying "Signed in as …" from whatever
+        // was true when it first opened.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await model.refresh() }
+        }
+        // Finder's Sign In button, relayed by the file provider UI extension. Anything else on the
+        // scheme — a stray OAuth callback after the sheet has closed — is not an instruction.
+        .onOpenURL { url in
+            guard url.host == "signin" else { return }
+            Task { await model.signInFromSystem() }
+        }
     }
 
     private var header: some View {

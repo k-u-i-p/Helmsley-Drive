@@ -61,6 +61,8 @@
 		HD000000000000000000004A /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = HD000000000000000000004B /* Assets.xcassets */; };
 		HD000000000000000000004C /* HelmsleyFileProvider.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = HD000000000000000000004D /* HelmsleyFileProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		HD000000000000000000004E /* HelmsleyFileProvider-iOS.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = HD000000000000000000004F /* HelmsleyFileProvider-iOS.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		HD0000000000000000000088 /* ActionViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = HD0000000000000000000089 /* ActionViewController.swift */; };
+		HD000000000000000000008D /* HelmsleyFileProviderUI.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = HD000000000000000000008C /* HelmsleyFileProviderUI.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -71,6 +73,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				HD000000000000000000004C /* HelmsleyFileProvider.appex in Embed Foundation Extensions */,
+				HD000000000000000000008D /* HelmsleyFileProviderUI.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -124,6 +127,10 @@
 		HD000000000000000000004D /* HelmsleyFileProvider.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "HelmsleyFileProvider.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 		HD000000000000000000005B /* HelmsleyDrive-iOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "HelmsleyDrive-iOS.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		HD000000000000000000004F /* HelmsleyFileProvider-iOS.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "HelmsleyFileProvider-iOS.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		HD0000000000000000000089 /* ActionViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActionViewController.swift; sourceTree = "<group>"; };
+		HD000000000000000000008A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		HD000000000000000000008B /* FileProviderUI.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = FileProviderUI.entitlements; sourceTree = "<group>"; };
+		HD000000000000000000008C /* HelmsleyFileProviderUI.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "HelmsleyFileProviderUI.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -178,6 +185,16 @@
 			path = "FileProvider";
 			sourceTree = "<group>";
 		};
+		HD000000000000000000008E /* FileProviderUI */ = {
+			isa = PBXGroup;
+			children = (
+				HD0000000000000000000089 /* ActionViewController.swift */,
+				HD000000000000000000008A /* Info.plist */,
+				HD000000000000000000008B /* FileProviderUI.entitlements */,
+			);
+			path = "FileProviderUI";
+			sourceTree = "<group>";
+		};
 		HD0000000000000000000060 /* HelmsleyDrive-iOS */ = {
 			isa = PBXGroup;
 			children = (
@@ -205,6 +222,7 @@
 			children = (
 				HD000000000000000000005A /* HelmsleyDrive.app */,
 				HD000000000000000000004D /* HelmsleyFileProvider.appex */,
+				HD000000000000000000008C /* HelmsleyFileProviderUI.appex */,
 				HD000000000000000000005B /* HelmsleyDrive-iOS.app */,
 				HD000000000000000000004F /* HelmsleyFileProvider-iOS.appex */,
 			);
@@ -218,6 +236,7 @@
 				HD000000000000000000005D /* AppShared */,
 				HD000000000000000000005E /* HelmsleyDrive */,
 				HD000000000000000000005F /* FileProvider */,
+				HD000000000000000000008E /* FileProviderUI */,
 				HD0000000000000000000060 /* HelmsleyDrive-iOS */,
 				HD0000000000000000000061 /* FileProvider-iOS */,
 				HD0000000000000000000062 /* Products */,
@@ -249,6 +268,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		HD0000000000000000000067 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		HD0000000000000000000090 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -369,6 +395,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		HD000000000000000000008F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				HD0000000000000000000088,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXContainerItemProxy section */
@@ -386,6 +420,13 @@
 			remoteGlobalIDString = HD0000000000000000000074;
 			remoteInfo = "HelmsleyFileProvider-iOS";
 		};
+		HD0000000000000000000093 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = HD0000000000000000000071 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = HD0000000000000000000092;
+			remoteInfo = "HelmsleyFileProviderUI";
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXTargetDependency section */
@@ -398,6 +439,11 @@
 			isa = PBXTargetDependency;
 			target = HD0000000000000000000074 /* HelmsleyFileProvider-iOS */;
 			targetProxy = HD0000000000000000000073 /* PBXContainerItemProxy */;
+		};
+		HD0000000000000000000094 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = HD0000000000000000000092 /* HelmsleyFileProviderUI */;
+			targetProxy = HD0000000000000000000093 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -415,6 +461,7 @@
 			);
 			dependencies = (
 				HD0000000000000000000075 /* PBXTargetDependency */,
+				HD0000000000000000000094 /* PBXTargetDependency */,
 			);
 			name = "HelmsleyDrive";
 			productName = "HelmsleyDrive";
@@ -436,6 +483,22 @@
 			name = "HelmsleyFileProvider";
 			productName = "HelmsleyFileProvider";
 			productReference = HD000000000000000000004D /* HelmsleyFileProvider.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		HD0000000000000000000092 /* HelmsleyFileProviderUI */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = HD0000000000000000000095 /* Build configuration list for PBXNativeTarget "HelmsleyFileProviderUI" */;
+			buildPhases = (
+				HD000000000000000000008F /* Sources */,
+				HD0000000000000000000090 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "HelmsleyFileProviderUI";
+			productName = "HelmsleyFileProviderUI";
+			productReference = HD000000000000000000008C /* HelmsleyFileProviderUI.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
 		HD000000000000000000007A /* HelmsleyDrive-iOS */ = {
@@ -496,6 +559,9 @@
 					HD0000000000000000000074 = {
 						CreatedOnToolsVersion = 27.0;
 					};
+					HD0000000000000000000092 = {
+						CreatedOnToolsVersion = 27.0;
+					};
 				};
 			};
 			buildConfigurationList = HD000000000000000000007D /* Build configuration list for PBXProject "HelmsleyDrive" */;
@@ -513,6 +579,7 @@
 			targets = (
 				HD0000000000000000000077 /* HelmsleyDrive */,
 				HD0000000000000000000072 /* HelmsleyFileProvider */,
+				HD0000000000000000000092 /* HelmsleyFileProviderUI */,
 				HD000000000000000000007A /* HelmsleyDrive-iOS */,
 				HD0000000000000000000074 /* HelmsleyFileProvider-iOS */,
 			);
@@ -651,6 +718,46 @@
 			};
 			name = Release;
 		};
+		HD0000000000000000000096 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = "FileProviderUI/FileProviderUI.entitlements";
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "FileProviderUI/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = uk.co.helmsley.HelmsleyDrive.FileProviderUI;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Debug;
+		};
+		HD0000000000000000000097 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = "FileProviderUI/FileProviderUI.entitlements";
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "FileProviderUI/Info.plist";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = uk.co.helmsley.HelmsleyDrive.FileProviderUI;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+			};
+			name = Release;
+		};
 		HD0000000000000000000084 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -769,6 +876,15 @@
 			buildConfigurations = (
 				HD0000000000000000000082 /* Debug */,
 				HD0000000000000000000083 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		HD0000000000000000000095 /* Build configuration list for PBXNativeTarget "HelmsleyFileProviderUI" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				HD0000000000000000000096 /* Debug */,
+				HD0000000000000000000097 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

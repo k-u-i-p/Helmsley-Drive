@@ -55,7 +55,7 @@ into both extensions unchanged; the platform difference amounts to two `#if os(m
 
 ```
 Mac/
-  Shared/                 compiled into all four targets
+  Shared/                 compiled into all four app and provider targets
     Configuration.swift   identifiers, portal address, and the keychain group lookup
     OAuth.swift           PKCE flow, token exchange/refresh, and the actor that hands out a live token
     TokenStore.swift      the token set, in the shared keychain
@@ -66,9 +66,10 @@ Mac/
     AppModel.swift        sign in, mount, unmount — the state behind both UIs
     SignIn.swift          the OAuth sheet, anchored to an NSWindow or a UIWindow
   FileProvider/           both extensions: items, enumerators, and the extension class itself
+  FileProviderUI/         macOS only: what Finder's own Sign In button opens — a dialog that
+                          relays the click to the app, where signing in actually happens
   HelmsleyDrive/          macOS UI          HelmsleyDrive-iOS/    iOS UI
                                             FileProvider-iOS/     iOS extension plist/entitlements
-  Tools/generate-xcodeproj.py   regenerates HelmsleyDrive.xcodeproj (see below)
   Tools/generate-icon.py        builds the app icons from the portal's H mark
   Tools/flatten-png.swift       strips alpha, which App Store icons may not have
 Windows/                  the Windows client — the same engine shape on the Cloud Filter API, in C#
@@ -488,8 +489,9 @@ xcodebuild -project Mac/HelmsleyDrive.xcodeproj -scheme HelmsleyDrive -configura
 ## Shipping the iOS app to TestFlight
 
 Bump the version, which both Info.plists read through `$(...)` — `MARKETING_VERSION` and
-`CURRENT_PROJECT_VERSION` in `Mac/Tools/generate-xcodeproj.py`, then re-run it. App Store Connect
-rejects a build number it has already seen, so `CURRENT_PROJECT_VERSION` has to move every upload.
+`CURRENT_PROJECT_VERSION` in the project-level build settings (`project.pbxproj`, both Debug and
+Release). App Store Connect rejects a build number it has already seen, so
+`CURRENT_PROJECT_VERSION` has to move every upload.
 
 ```bash
 xcodebuild -project Mac/HelmsleyDrive.xcodeproj -scheme HelmsleyDrive-iOS -configuration Release \
@@ -531,9 +533,10 @@ Store Connect record.
 
 ### Changing the development team
 
-One place: `DEVELOPMENT_TEAM` in `Mac/Tools/generate-xcodeproj.py` (currently `CR2F6D8AF7`), then re-run
-it. The keychain access group is read back out of the running binary's own entitlements, so it
-follows the signing team without being written down anywhere.
+One place: `DEVELOPMENT_TEAM` in the project-level build settings (currently `CR2F6D8AF7`, in both
+the Debug and Release configurations of `project.pbxproj`). The keychain access group is read back
+out of the running binary's own entitlements, so it follows the signing team without being written
+down anywhere.
 
 Note that the team id is **not** the identifier in a signing certificate's common name —
 `Apple Development: Someone (RW34QL2584)` is the individual, not the team. Take it from
@@ -561,17 +564,6 @@ sidebar, which is where this icon spends its whole life.
 
 Quick Look is the rasteriser, since it is the only one macOS ships. If the icon ever comes out
 blank, that is the thing to check first.
-
-### Regenerating the Xcode project
-
-`HelmsleyDrive.xcodeproj` is generated, not hand-maintained:
-
-```bash
-python3 Mac/Tools/generate-xcodeproj.py
-```
-
-Adding a source file means adding it to the list at the top of that script and re-running. Editing
-the project in Xcode works too, but the next regeneration overwrites it.
 
 ## Running it
 
@@ -636,7 +628,8 @@ the credential; `TCC access check failed … Cocoa 257` is the app not being in 
 
 
 - **"Sign in" next to the volume in Finder** — the refresh token has expired (30 days) or was
-  revoked. Open the app and sign in again.
+  revoked. The button opens a dialog whose Open Helmsley Drive button hands the click to the app,
+  which opens the sign-in sheet at once; opening the app yourself does the same.
 - **"Keychain access failed: A required entitlement isn't present"** — the binary is not signed with
   the keychain-sharing entitlement. Check `codesign -d --entitlements - <app>` lists
   `<TEAMID>.uk.co.helmsley.HelmsleyDrive`; a build made with `CODE_SIGNING_ALLOWED=NO` has no
