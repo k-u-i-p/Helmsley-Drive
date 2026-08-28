@@ -36,7 +36,8 @@ Two halves, in two repositories.
 **`../Helmsley` — the portal.** Gained a file-provider API and a way for a native app to
 authenticate. See *Changes to the portal* below.
 
-**This repository — the apps.** One Xcode project, four targets, two platforms:
+**This repository — the apps.** `Mac/` holds the Apple clients — one Xcode project, four targets,
+two platforms — and `Windows/` the Windows client:
 
 | Target | Platform | What it is |
 | --- | --- | --- |
@@ -53,22 +54,24 @@ The two platforms share everything but their UI. `FileProvider/` — the whole e
 into both extensions unchanged; the platform difference amounts to two `#if os(macOS)` blocks.
 
 ```
-Shared/                 compiled into all four targets
-  Configuration.swift   identifiers, portal address, and the keychain group lookup
-  OAuth.swift           PKCE flow, token exchange/refresh, and the actor that hands out a live token
-  TokenStore.swift      the token set, in the shared keychain
-  HelmsleyAPI.swift     every call to /api/files
-  ItemIdentity.swift    what an NSFileProviderItemIdentifier means here
-  PushTokenStore.swift  the APNs token the extension registered, where the app can withdraw it
-AppShared/              the two container apps, not the extensions
-  AppModel.swift        sign in, mount, unmount — the state behind both UIs
-  SignIn.swift          the OAuth sheet, anchored to an NSWindow or a UIWindow
-FileProvider/           both extensions: items, enumerators, and the extension class itself
-HelmsleyDrive/          macOS UI          HelmsleyDrive-iOS/    iOS UI
-                                          FileProvider-iOS/     iOS extension plist/entitlements
-Tools/generate-xcodeproj.py   regenerates HelmsleyDrive.xcodeproj (see below)
-Tools/generate-icon.py        builds the app icons from the portal's H mark
-Tools/flatten-png.swift       strips alpha, which App Store icons may not have
+Mac/
+  Shared/                 compiled into all four targets
+    Configuration.swift   identifiers, portal address, and the keychain group lookup
+    OAuth.swift           PKCE flow, token exchange/refresh, and the actor that hands out a live token
+    TokenStore.swift      the token set, in the shared keychain
+    HelmsleyAPI.swift     every call to /api/files
+    ItemIdentity.swift    what an NSFileProviderItemIdentifier means here
+    PushTokenStore.swift  the APNs token the extension registered, where the app can withdraw it
+  AppShared/              the two container apps, not the extensions
+    AppModel.swift        sign in, mount, unmount — the state behind both UIs
+    SignIn.swift          the OAuth sheet, anchored to an NSWindow or a UIWindow
+  FileProvider/           both extensions: items, enumerators, and the extension class itself
+  HelmsleyDrive/          macOS UI          HelmsleyDrive-iOS/    iOS UI
+                                            FileProvider-iOS/     iOS extension plist/entitlements
+  Tools/generate-xcodeproj.py   regenerates HelmsleyDrive.xcodeproj (see below)
+  Tools/generate-icon.py        builds the app icons from the portal's H mark
+  Tools/flatten-png.swift       strips alpha, which App Store icons may not have
+Windows/                  the Windows client — the same engine shape on the Cloud Filter API, in C#
 ```
 
 `AppShared/` is separate from `Shared/` for a reason the compiler enforces: `UIApplication.shared`,
@@ -460,11 +463,11 @@ exercised without deploying anything.
 Requires Xcode and a signing team. The project is set to team `CR2F6D8AF7`.
 
 ```bash
-xcodebuild -project HelmsleyDrive.xcodeproj -scheme HelmsleyDrive -configuration Debug -allowProvisioningUpdates build
+xcodebuild -project Mac/HelmsleyDrive.xcodeproj -scheme HelmsleyDrive -configuration Debug -allowProvisioningUpdates build
 ```
 
 ```bash
-xcodebuild -project HelmsleyDrive.xcodeproj -scheme HelmsleyDrive-iOS -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
+xcodebuild -project Mac/HelmsleyDrive.xcodeproj -scheme HelmsleyDrive-iOS -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
 ```
 
 The first build of each has to register three things with the developer portal, which
@@ -479,17 +482,17 @@ Both platforms use those same two App IDs, so they are one app in App Store Conn
 To check that it compiles without touching the developer portal at all:
 
 ```bash
-xcodebuild -project HelmsleyDrive.xcodeproj -scheme HelmsleyDrive -configuration Debug CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project Mac/HelmsleyDrive.xcodeproj -scheme HelmsleyDrive -configuration Debug CODE_SIGNING_ALLOWED=NO build
 ```
 
 ## Shipping the iOS app to TestFlight
 
 Bump the version, which both Info.plists read through `$(...)` — `MARKETING_VERSION` and
-`CURRENT_PROJECT_VERSION` in `Tools/generate-xcodeproj.py`, then re-run it. App Store Connect
+`CURRENT_PROJECT_VERSION` in `Mac/Tools/generate-xcodeproj.py`, then re-run it. App Store Connect
 rejects a build number it has already seen, so `CURRENT_PROJECT_VERSION` has to move every upload.
 
 ```bash
-xcodebuild -project HelmsleyDrive.xcodeproj -scheme HelmsleyDrive-iOS -configuration Release \
+xcodebuild -project Mac/HelmsleyDrive.xcodeproj -scheme HelmsleyDrive-iOS -configuration Release \
   -destination 'generic/platform=iOS' -archivePath build/HelmsleyDrive-iOS.xcarchive \
   -allowProvisioningUpdates archive
 ```
@@ -528,7 +531,7 @@ Store Connect record.
 
 ### Changing the development team
 
-One place: `DEVELOPMENT_TEAM` in `Tools/generate-xcodeproj.py` (currently `CR2F6D8AF7`), then re-run
+One place: `DEVELOPMENT_TEAM` in `Mac/Tools/generate-xcodeproj.py` (currently `CR2F6D8AF7`), then re-run
 it. The keychain access group is read back out of the running binary's own entitlements, so it
 follows the signing team without being written down anywhere.
 
@@ -543,7 +546,7 @@ Built from the portal's own mark (`../Helmsley/frontend/public/helmsley-h.svg`),
 second copy of the artwork that can drift from it:
 
 ```bash
-python3 Tools/generate-icon.py
+python3 Mac/Tools/generate-icon.py
 ```
 
 That writes `AppIcon.appiconset` into **both** targets' asset catalogs — the Dock and the About box
@@ -564,7 +567,7 @@ blank, that is the thing to check first.
 `HelmsleyDrive.xcodeproj` is generated, not hand-maintained:
 
 ```bash
-python3 Tools/generate-xcodeproj.py
+python3 Mac/Tools/generate-xcodeproj.py
 ```
 
 Adding a source file means adding it to the list at the top of that script and re-running. Editing
@@ -577,7 +580,7 @@ daemon's TCC check fails on that location, and the failure surfaces as "The appl
 used right now" when mounting, or as a volume that mounts and stays empty.
 
 ```bash
-ditto "$(xcodebuild -project HelmsleyDrive.xcodeproj -scheme HelmsleyDrive -configuration Debug \
+ditto "$(xcodebuild -project Mac/HelmsleyDrive.xcodeproj -scheme HelmsleyDrive -configuration Debug \
   -showBuildSettings | awk -F' = ' '/ BUILT_PRODUCTS_DIR/{print $2}')/HelmsleyDrive.app" \
   "/Applications/Helmsley Drive.app"
 ```

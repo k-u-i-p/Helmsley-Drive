@@ -4,7 +4,7 @@
 // every rasteriser to hand emits RGBA. `sips` cannot drop the channel; going via JPEG would, but it
 // would also put artefacts through a large flat gradient, which is most of this icon.
 //
-//     xcrun swift Tools/flatten-png.swift <in.png> <out.png>
+//     xcrun swift Mac/Tools/flatten-png.swift <in.png> <out.png>
 
 import CoreGraphics
 import Foundation

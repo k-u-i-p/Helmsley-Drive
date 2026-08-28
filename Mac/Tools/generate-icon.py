@@ -3,7 +3,7 @@
 
 Run after the mark changes in the portal:
 
-    python3 Tools/generate-icon.py
+    python3 Mac/Tools/generate-icon.py
 
 The mark (`frontend/public/helmsley-h.svg`) is 825.4 x 1080.8 — taller than it is wide — and every
 rasteriser to hand fits an SVG to its output box, so handing one the mark directly stretches it into
