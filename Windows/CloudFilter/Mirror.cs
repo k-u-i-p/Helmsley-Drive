@@ -104,9 +104,12 @@ public sealed class Mirror : IDisposable
         try
         {
             // Breadth-first from the root, parents before children, so a rename applied to a
-            // folder has already settled the path its children are addressed by.
+            // folder has already settled the path its children are addressed by. The root is
+            // always due: it is a plain directory rather than a placeholder, so nothing marks it
+            // unpopulated and no fetch will ever ask for it — its top level is the pass's to
+            // materialise, and the one listing opening the drive costs.
             var due = new Queue<(string? Id, string Directory)>();
-            if (_snapshots.Knows(null)) due.Enqueue((null, _root));
+            due.Enqueue((null, _root));
             while (due.TryDequeue(out var folder))
             {
                 var listing = await RefreshFolder(folder.Id, folder.Directory);

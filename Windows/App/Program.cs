@@ -50,8 +50,9 @@ var key = SyncRoot.Connect(root, store, mirror);
 mirror.StartWatching();
 Console.WriteLine($"Connected: {root}");
 
-// No walk of the tree: a folder's entries are fetched the first time it is looked inside, and
-// only folders that have been looked inside are re-checked by the poll.
+// No walk of the tree: startup costs one listing (the root, which is no placeholder and so can
+// never ask for itself), everything below fetches the first time it is looked inside, and only
+// folders that have been looked inside are re-checked by the poll.
 Console.WriteLine($"Ready. The tree fills in as it is browsed; browsed folders are re-checked every {Configuration.PollInterval.TotalMinutes:0} minutes. " +
     "Ctrl+C disconnects (and leaves the root registered — run with --unregister to remove it).");
 

@@ -38,7 +38,7 @@ try
     // MARK: Portal to disk
 
     await mirror.SyncPass();
-    Check("startup asks the portal for nothing", portal.Log.Count == 0);
+    Check("startup costs one listing: the root", portal.Log.Count == 1 && portal.Log[0] == "list /");
 
     // Enumerating is what Explorer does when a folder is opened, and enumeration of an
     // unpopulated directory is what triggers FETCH_PLACEHOLDERS — a bare path lookup may not.
