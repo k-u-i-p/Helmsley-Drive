@@ -60,12 +60,15 @@ try
         && File.Exists(Path.Combine(root, "Docs", "a renamed.txt"))
         && !File.Exists(Path.Combine(root, "Docs", "a.txt"))
         && !File.Exists(Path.Combine(root, "doomed.txt")));
+    Probe(Path.Combine(root, "Docs", "a renamed.txt"));
     Check("a changed version re-hydrates to the new bytes",
         File.ReadAllText(Path.Combine(root, "Docs", "a renamed.txt")) == "the second version of a");
 
     // MARK: Disk to portal, from a foreign process
 
     Run($"echo fresh local bytes> \"{Path.Combine(root, "Docs", "fresh.txt")}\"");
+    Check("the foreign process could write at all",
+        File.Exists(Path.Combine(root, "Docs", "fresh.txt")));
     await Until("a local create uploads and earns a placeholder",
         () => portal.FindByName("fresh.txt") is { } id
             && Placeholders.TryGetState(Path.Combine(root, "Docs", "fresh.txt"))?.Id == id);
@@ -148,7 +151,23 @@ void Run(string command)
         RedirectStandardOutput = true,
         RedirectStandardError = true,
     })!;
+    var output = (cmd.StandardOutput.ReadToEnd() + cmd.StandardError.ReadToEnd()).Trim();
     cmd.WaitForExit();
+    Console.WriteLine($"  $ {command}" + (cmd.ExitCode == 0 ? "" : $"  => exit {cmd.ExitCode}"));
+    if (output.Length > 0) Console.WriteLine($"    {output.ReplaceLineEndings("\n    ")}");
+}
+
+void Probe(string path)
+{
+    try
+    {
+        using var _ = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        Console.WriteLine($"  probe: {path} is free");
+    }
+    catch (Exception e)
+    {
+        Console.WriteLine($"  probe: {path}: {e.Message}");
+    }
 }
 
 /// <summary>The portal as the seam sees it, small enough to hold in one hand and lie about at will.</summary>
