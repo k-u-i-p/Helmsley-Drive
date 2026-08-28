@@ -47,8 +47,17 @@ if (args.Contains("--sign-out"))
 if (!TokenProvider.Shared.IsSignedIn)
     await SignIn.Run();
 
-var admin = await HelmsleyApi.Shared.Whoami();
-Console.WriteLine($"Signed in to {Configuration.BaseUri.Host} as {admin.Name ?? admin.Email ?? $"admin {admin.Id}"}");
+// A greeting, not a gate: the portal being briefly unreachable — rate limits included — must
+// not stop the drive from mounting. Everything after this retries on its own schedule.
+try
+{
+    var admin = await HelmsleyApi.Shared.Whoami();
+    Console.WriteLine($"Signed in to {Configuration.BaseUri.Host} as {admin.Name ?? admin.Email ?? $"admin {admin.Id}"}");
+}
+catch (ApiException e)
+{
+    Console.Error.WriteLine($"the portal is not answering right now ({e.Message}); mounting anyway");
+}
 
 Directory.CreateDirectory(root);
 SyncRoot.Register(root);
