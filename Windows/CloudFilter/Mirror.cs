@@ -78,6 +78,11 @@ public sealed class Mirror
             DeleteLocal(Path.Combine(directory, was.Name), was.IsFolder);
         }
 
+        // What the snapshot will say this folder holds: each item as this pass left it — as
+        // listed where its work succeeded, as it was where it failed, so the next pass sees the
+        // difference again and retries rather than believing work that never happened.
+        var accomplished = new List<RemoteItem>(listing.Count);
+
         foreach (var item in listing)
         {
             try
@@ -104,16 +109,19 @@ public sealed class Mirror
                 if (!item.IsFolder && File.Exists(path)
                     && Placeholders.TryGetState(path) is { InSync: false })
                     await UploadChanged(path);
+
+                accomplished.Add(item);
             }
             catch (Exception e)
             {
                 // One item must not cost the folder: a name the filesystem refuses, a file held
                 // open — log it and let the rest of the listing land.
                 Console.Error.WriteLine($"mirror {item.Name} in {directory} failed: {e.Message}");
+                if (previous.TryGetValue(item.Id, out var was)) accomplished.Add(was);
             }
         }
 
-        _snapshots.Record(folderId, listing);
+        _snapshots.Record(folderId, accomplished);
 
         foreach (var folder in listing.Where(i => i.IsFolder))
             await SyncFolder(folder.Id, Path.Combine(directory, folder.Name));

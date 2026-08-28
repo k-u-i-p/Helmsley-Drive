@@ -26,6 +26,7 @@ var docs = portal.AddFolder(null, "Docs");
 portal.AddFile(null, "b.txt", "top-level bytes");
 var a = portal.AddFile(docs, "a.txt", "the first version of a");
 
+LocalChanges.Trace = true;
 Directory.CreateDirectory(root);
 SyncRoot.Register(root);
 var mirror = new Mirror(portal, root, snapshotPath);

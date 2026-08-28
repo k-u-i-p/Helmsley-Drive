@@ -21,7 +21,17 @@ public static unsafe class LocalChanges
 {
     internal static Mirror? Mirror;
 
+    /// <summary>Prints every notification as it arrives — the harness's eyes, off in the app.</summary>
+    public static bool Trace;
+
     static readonly uint OwnProcessId = (uint)Environment.ProcessId;
+
+    static void Note(CF_CALLBACK_INFO* info, string kind, string detail)
+    {
+        if (!Trace) return;
+        var pid = info->ProcessInfo is null ? 0 : info->ProcessInfo->ProcessId;
+        Console.WriteLine($"  [{kind}] pid={pid}{(pid == OwnProcessId ? " (self)" : "")} {detail}");
+    }
 
     const int STATUS_ACCESS_DENIED = unchecked((int)0xC0000022);
 
@@ -45,6 +55,7 @@ public static unsafe class LocalChanges
 
     internal static void OnCloseCompletion(CF_CALLBACK_INFO* info, CF_CALLBACK_PARAMETERS* parameters)
     {
+        Note(info, "close", FullPath(info, info->NormalizedPath));
         if (IsOwnEvent(info) || Mirror is not { } mirror) return;
         if ((parameters->Anonymous.CloseCompletion.Flags
             & CF_CALLBACK_CLOSE_COMPLETION_FLAGS.CF_CALLBACK_CLOSE_COMPLETION_FLAG_DELETED) != 0) return;
@@ -59,6 +70,7 @@ public static unsafe class LocalChanges
 
     internal static void OnRename(CF_CALLBACK_INFO* info, CF_CALLBACK_PARAMETERS* parameters)
     {
+        Note(info, "rename", $"{FullPath(info, info->NormalizedPath)} -> {FullPath(info, parameters->Anonymous.Rename.TargetPath)}");
         var allowed = true;
         if (!IsOwnEvent(info) && Mirror is { } mirror)
         {
@@ -71,6 +83,7 @@ public static unsafe class LocalChanges
 
     internal static void OnRenameCompletion(CF_CALLBACK_INFO* info, CF_CALLBACK_PARAMETERS* parameters)
     {
+        Note(info, "renamed", $"{FullPath(info, parameters->Anonymous.RenameCompletion.SourcePath)} -> {FullPath(info, info->NormalizedPath)}");
         if (IsOwnEvent(info) || Mirror is not { } mirror) return;
 
         // The one case the pre-rename callback cannot answer for: something arriving from outside
@@ -85,6 +98,7 @@ public static unsafe class LocalChanges
 
     internal static void OnDelete(CF_CALLBACK_INFO* info, CF_CALLBACK_PARAMETERS* parameters)
     {
+        Note(info, "delete", FullPath(info, info->NormalizedPath));
         var allowed = true;
         if (!IsOwnEvent(info) && Mirror is { } mirror)
         {

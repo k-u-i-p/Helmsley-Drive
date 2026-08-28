@@ -21,6 +21,24 @@ public static unsafe class Placeholders
 
     const int ERROR_ALREADY_EXISTS = unchecked((int)0x800700B7);
     const int ERROR_NOT_A_CLOUD_FILE = unchecked((int)0x80070178);
+    const int ERROR_SHARING_VIOLATION = unchecked((int)0x80070020);
+
+    /// <summary>
+    /// The exclusive open loses races with everything that pounces on a fresh entry — the search
+    /// indexer, the antimalware scan — and those handles live for moments. A short retry is the
+    /// difference between an update that works and one that fails whenever anything else looks.
+    /// </summary>
+    static void SharingRetries(Action attempt)
+    {
+        for (var tries = 0; ; tries++)
+        {
+            try { attempt(); return; }
+            catch (COMException e) when (e.HResult == ERROR_SHARING_VIOLATION && tries < 5)
+            {
+                Thread.Sleep(200 * (tries + 1));
+            }
+        }
+    }
 
     public static void Create(string directory, IEnumerable<RemoteItem> items)
     {
@@ -91,7 +109,10 @@ public static unsafe class Placeholders
     /// A placeholder holding an unsynced local write is left alone: those bytes are the newest
     /// anywhere, and the close-completion upload is what reconciles them.
     /// </summary>
-    public static void Update(string path, RemoteItem item, bool dehydrate)
+    public static void Update(string path, RemoteItem item, bool dehydrate) =>
+        SharingRetries(() => UpdateOnce(path, item, dehydrate));
+
+    static void UpdateOnce(string path, RemoteItem item, bool dehydrate)
     {
         using var handle = ProtectedHandle.Open(path, exclusive: true);
         if (!ReadState(handle).InSync) return;
@@ -121,7 +142,7 @@ public static unsafe class Placeholders
     /// last step of a local create, once the portal has answered with the row it minted. The bytes
     /// stay on disk; they are the portal's bytes now too, which is what in-sync asserts.
     /// </summary>
-    public static void Convert(string path, string id)
+    public static void Convert(string path, string id) => SharingRetries(() =>
     {
         using var handle = ProtectedHandle.Open(path, exclusive: true);
         fixed (char* identity = id)
@@ -130,16 +151,16 @@ public static unsafe class Placeholders
                 identity, (uint)(id.Length * sizeof(char)),
                 CF_CONVERT_FLAGS.CF_CONVERT_FLAG_MARK_IN_SYNC, null).ThrowOnFailure();
         }
-    }
+    });
 
     /// <summary>What a completed upload of local bytes earns the placeholder that held them.</summary>
-    public static void MarkInSync(string path)
+    public static void MarkInSync(string path) => SharingRetries(() =>
     {
         using var handle = ProtectedHandle.Open(path, exclusive: true);
         PInvoke.CfSetInSyncState(handle.Win32Handle,
             CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC,
             CF_SET_IN_SYNC_FLAGS.CF_SET_IN_SYNC_FLAG_NONE, null).ThrowOnFailure();
-    }
+    });
 
     /// <summary>
     /// Whose row this entry is and whether it is in sync — or null for an entry that is no
