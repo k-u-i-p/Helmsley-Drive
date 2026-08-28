@@ -50,8 +50,9 @@ var key = SyncRoot.Connect(root, store, mirror);
 mirror.StartWatching();
 Console.WriteLine($"Connected: {root}");
 
-await mirror.SyncPass();
-Console.WriteLine($"Mirrored. Watching for local changes; polling the portal every {Configuration.PollInterval.TotalMinutes:0} minutes. " +
+// No walk of the tree: a folder's entries are fetched the first time it is looked inside, and
+// only folders that have been looked inside are re-checked by the poll.
+Console.WriteLine($"Ready. The tree fills in as it is browsed; browsed folders are re-checked every {Configuration.PollInterval.TotalMinutes:0} minutes. " +
     "Ctrl+C disconnects (and leaves the root registered — run with --unregister to remove it).");
 
 var quit = new CancellationTokenSource();
@@ -59,15 +60,15 @@ Console.CancelKeyPress += (_, e) => { e.Cancel = true; quit.Cancel(); };
 
 while (!quit.IsCancellationRequested)
 {
-    try { await Task.Delay(Configuration.PollInterval, quit.Token); }
-    catch (OperationCanceledException) { break; }
-
     try { await mirror.SyncPass(); }
     catch (Exception e)
     {
         // A failed pass changes nothing on disk; the next one starts from the same snapshot.
         Console.Error.WriteLine($"sync pass failed: {e.Message}");
     }
+
+    try { await Task.Delay(Configuration.PollInterval, quit.Token); }
+    catch (OperationCanceledException) { break; }
 }
 
 mirror.Dispose();

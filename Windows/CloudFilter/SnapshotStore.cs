@@ -44,6 +44,19 @@ public sealed class SnapshotStore
         }
     }
 
+    /// <summary>
+    /// Whether the folder has ever been listed. A folder this store knows is materialised — its
+    /// entries exist on disk and the poll keeps them true; one it does not know has never been
+    /// looked inside, and costs nothing until someone does.
+    /// </summary>
+    public bool Knows(string? folderId)
+    {
+        lock (_lock)
+        {
+            return _folders.ContainsKey(folderId ?? "");
+        }
+    }
+
     /// <summary>What the folder held when last listed — empty for one never listed, which is what a first run is.</summary>
     public Dictionary<string, RemoteItem> Current(string? folderId)
     {

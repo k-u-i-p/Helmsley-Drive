@@ -91,28 +91,52 @@ public sealed class Mirror : IDisposable
 
     // MARK: - Portal to disk
 
+    /// <summary>
+    /// Re-lists every *materialised* folder — one the snapshot knows, because population or an
+    /// earlier pass listed it — and acts on the difference. Folders nobody has looked inside are
+    /// not walked: their placeholders sit unpopulated, and their first enumeration fetches a
+    /// listing that is fresh by construction. That asymmetry is the whole economy — the portal
+    /// answers for what is being watched, not for everything it holds.
+    /// </summary>
     public async Task SyncPass()
     {
         await _pass.WaitAsync();
-        try { await SyncFolder(null, _root); }
+        try
+        {
+            // Breadth-first from the root, parents before children, so a rename applied to a
+            // folder has already settled the path its children are addressed by.
+            var due = new Queue<(string? Id, string Directory)>();
+            if (_snapshots.Knows(null)) due.Enqueue((null, _root));
+            while (due.TryDequeue(out var folder))
+            {
+                var listing = await RefreshFolder(folder.Id, folder.Directory);
+                if (listing is null) continue;
+                foreach (var child in listing.Where(i => i.IsFolder && _snapshots.Knows(i.Id)))
+                    due.Enqueue((child.Id, Path.Combine(folder.Directory, child.Name)));
+            }
+        }
         finally { _pass.Release(); }
     }
 
-    async Task SyncFolder(string? folderId, string directory)
+    /// <summary>Public for the populator: a fetched listing is a materialised folder from then on.</summary>
+    public void NoteListed(string? folderId, IReadOnlyList<RemoteItem> items) =>
+        _snapshots.Record(folderId, items);
+
+    async Task<IReadOnlyList<RemoteItem>?> RefreshFolder(string? folderId, string directory)
     {
         IReadOnlyList<RemoteItem> listing;
         try { listing = await _remote.List(folderId); }
         catch (Exception e) when (_remote.IsNotFound(e))
         {
             // The folder is gone; the pass over its parent is what deletes it. Nothing to do here.
-            return;
+            return null;
         }
         catch (Exception e)
         {
             // Transient. The snapshot still describes the last listing acted on, so skipping the
             // subtree loses nothing — the next pass simply has more difference to act on.
             Console.Error.WriteLine($"list {folderId ?? "/"} failed: {e.Message}");
-            return;
+            return null;
         }
 
         var previous = _snapshots.Current(folderId);
@@ -178,9 +202,7 @@ public sealed class Mirror : IDisposable
         }
 
         _snapshots.Record(folderId, accomplished);
-
-        foreach (var folder in listing.Where(i => i.IsFolder))
-            await SyncFolder(folder.Id, Path.Combine(directory, folder.Name));
+        return listing;
     }
 
     void RenameLocal(string directory, RemoteItem was, RemoteItem now)

@@ -38,10 +38,16 @@ try
     // MARK: Portal to disk
 
     await mirror.SyncPass();
-    Check("initial mirror lays the tree down",
+    Check("startup asks the portal for nothing", portal.Log.Count == 0);
+
+    // These existence checks are themselves the enumeration: looking inside an unpopulated
+    // directory is what triggers FETCH_PLACEHOLDERS, so the tree appears because it is looked at.
+    Check("the tree appears as it is looked at",
         Directory.Exists(Path.Combine(root, "Docs"))
         && File.Exists(Path.Combine(root, "Docs", "a.txt"))
         && new FileInfo(Path.Combine(root, "b.txt")).Length == "top-level bytes".Length);
+    Check("it was the looking that fetched the listings",
+        portal.Log.Contains("list /") && portal.Log.Contains($"list {docs}"));
 
     await mirror.SyncPass();
     Check("a second pass over an unchanged tree is a no-op that succeeds", true);
@@ -235,6 +241,7 @@ sealed class FakePortal : IRemoteStore
     {
         lock (_lock)
         {
+            Log.Add($"list {folderId ?? "/"}");
             return Task.FromResult<IReadOnlyList<RemoteItem>>(
                 _nodes.Values.Where(n => n.ParentId == folderId && !n.Trashed).Select(Item).ToList());
         }

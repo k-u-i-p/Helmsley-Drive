@@ -34,8 +34,9 @@ public static unsafe class SyncRoot
 
             // Full hydration: a file is materialised in one fetch, not progressively — the portal
             // serves whole objects out of the bucket, so there is nothing to stream partially.
-            // Always-full population: the engine creates every placeholder itself, so the system
-            // never asks for a directory to be populated on demand.
+            // Partial population: a directory's entries are fetched the first time anything looks
+            // inside it (Populator answers FETCH_PLACEHOLDERS), so opening the drive costs one
+            // listing rather than a walk of the whole portal.
             var policies = new CF_SYNC_POLICIES
             {
                 StructSize = (uint)sizeof(CF_SYNC_POLICIES),
@@ -43,10 +44,12 @@ public static unsafe class SyncRoot
                 HardLink = CF_HARDLINK_POLICY.CF_HARDLINK_POLICY_NONE,
             };
             policies.Hydration.Primary = CF_HYDRATION_POLICY_PRIMARY.CF_HYDRATION_POLICY_FULL;
-            policies.Population.Primary = CF_POPULATION_POLICY_PRIMARY.CF_POPULATION_POLICY_ALWAYS_FULL;
+            policies.Population.Primary = CF_POPULATION_POLICY_PRIMARY.CF_POPULATION_POLICY_PARTIAL;
 
+            // UPDATE, so a root registered by an older build — with the eager population policy
+            // this replaces — is brought onto the new policies rather than refused.
             PInvoke.CfRegisterSyncRoot(path, in registration, in policies,
-                CF_REGISTER_FLAGS.CF_REGISTER_FLAG_NONE).ThrowOnFailure();
+                CF_REGISTER_FLAGS.CF_REGISTER_FLAG_UPDATE).ThrowOnFailure();
         }
     }
 
@@ -59,6 +62,8 @@ public static unsafe class SyncRoot
     public static SyncConnection Connect(string path, IRemoteStore store, Mirror mirror)
     {
         Hydrator.Store = store;
+        Populator.Store = store;
+        Populator.Mirror = mirror;
         LocalChanges.Mirror = mirror;
 
         _callbacks = new CF_CALLBACK_REGISTRATION[]
@@ -72,6 +77,17 @@ public static unsafe class SyncRoot
             {
                 Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_CANCEL_FETCH_DATA,
                 Callback = Hydrator.OnCancelFetchData,
+            },
+            // Population on demand: a directory's first enumeration asks for its entries.
+            new()
+            {
+                Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS,
+                Callback = Populator.OnFetchPlaceholders,
+            },
+            new()
+            {
+                Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_CANCEL_FETCH_PLACEHOLDERS,
+                Callback = Populator.OnCancelFetchPlaceholders,
             },
             // The local write path: saves and creates announce themselves as closes, and renames
             // and deletes are held by the filter until LocalChanges answers for the portal.

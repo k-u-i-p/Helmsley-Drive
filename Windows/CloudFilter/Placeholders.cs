@@ -60,37 +60,42 @@ public static unsafe class Placeholders
     /// Creates one placeholder, or brings an existing one up to date — which is what a re-run of
     /// the mirror, or a create racing a local save's conversion, turns creation into.
     /// </summary>
-    public static void CreateOne(string directory, RemoteItem item)
+    /// <summary>
+    /// One entry as the filter wants it described — for CfCreatePlaceholders and for a
+    /// TRANSFER_PLACEHOLDERS population alike. A folder is left unpopulated: its own entries are
+    /// fetched the first time anything looks inside it, which is the whole economy of the mirror.
+    /// The caller owns the pinned name and identity for as long as the struct is in use.
+    /// </summary>
+    internal static CF_PLACEHOLDER_CREATE_INFO Describe(RemoteItem item, char* name, char* identity)
     {
         long filetime = item.Modified.ToFileTime();
 
+        var info = new CF_PLACEHOLDER_CREATE_INFO
+        {
+            RelativeFileName = name,
+            // The identity blob is the UTF-16 bytes of the row id — what FETCH_DATA and
+            // FETCH_PLACEHOLDERS get handed back, and all either needs to name it to the portal.
+            FileIdentity = identity,
+            FileIdentityLength = (uint)(item.Id.Length * sizeof(char)),
+            Flags = CF_PLACEHOLDER_CREATE_FLAGS.CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC,
+        };
+
+        info.FsMetadata.FileSize = item.IsFolder ? 0 : item.Size;
+        info.FsMetadata.BasicInfo.CreationTime = filetime;
+        info.FsMetadata.BasicInfo.LastWriteTime = filetime;
+        info.FsMetadata.BasicInfo.LastAccessTime = filetime;
+        info.FsMetadata.BasicInfo.ChangeTime = filetime;
+        info.FsMetadata.BasicInfo.FileAttributes = item.IsFolder ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+        return info;
+    }
+
+    public static void CreateOne(string directory, RemoteItem item)
+    {
         fixed (char* dir = directory)
         fixed (char* name = item.Name)
         fixed (char* identity = item.Id)
         {
-            var info = new CF_PLACEHOLDER_CREATE_INFO
-            {
-                RelativeFileName = name,
-                // The identity blob is the UTF-16 bytes of the row id — what FETCH_DATA gets
-                // handed back, and all it needs to name the file to the portal.
-                FileIdentity = identity,
-                FileIdentityLength = (uint)(item.Id.Length * sizeof(char)),
-                Flags = CF_PLACEHOLDER_CREATE_FLAGS.CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC,
-            };
-
-            info.FsMetadata.FileSize = item.IsFolder ? 0 : item.Size;
-            info.FsMetadata.BasicInfo.CreationTime = filetime;
-            info.FsMetadata.BasicInfo.LastWriteTime = filetime;
-            info.FsMetadata.BasicInfo.LastAccessTime = filetime;
-            info.FsMetadata.BasicInfo.ChangeTime = filetime;
-            info.FsMetadata.BasicInfo.FileAttributes = item.IsFolder ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
-
-            if (item.IsFolder)
-            {
-                // The engine fills folders itself (population is always-full), so the filter must
-                // not hold this one empty waiting for an on-demand population that never comes.
-                info.Flags |= CF_PLACEHOLDER_CREATE_FLAGS.CF_PLACEHOLDER_CREATE_FLAG_DISABLE_ON_DEMAND_POPULATION;
-            }
+            var info = Describe(item, name, identity);
 
             uint processed;
             PInvoke.CfCreatePlaceholders(dir, &info, 1,
