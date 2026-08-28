@@ -56,6 +56,27 @@ public static class OAuth
             ["code_verifier"] = verifier,
         });
 
+    /// <summary>
+    /// Whether a token-endpoint refusal says the grant itself is dead.
+    ///
+    /// <c>invalid_grant</c> is the only refusal that means the refresh token is spent and signing
+    /// in again is the way back. Everything else a 400 can carry — <c>invalid_request</c>, a
+    /// proxy's error page, a body that is not JSON at all — leaves a refresh token that is still
+    /// good, so an unrecognised refusal reads as "not this", and the credential is kept.
+    /// </summary>
+    public static bool IsInvalidGrant(string body)
+    {
+        try
+        {
+            using var parsed = JsonDocument.Parse(body);
+            return parsed.RootElement.TryGetProperty("error", out var error) && error.GetString() == "invalid_grant";
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
+
     public static Task<TokenSet> Refresh(string refreshToken) =>
         Token(new Dictionary<string, string>
         {
@@ -97,6 +118,7 @@ public sealed class OAuthException(int status, string body)
     : Exception($"The sign-in server refused the request (HTTP {status}): {body}")
 {
     public int Status { get; } = status;
+    public string Body { get; } = body;
 }
 
 public sealed class NotAuthenticatedException()
@@ -149,13 +171,18 @@ public sealed class TokenProvider
             {
                 Console.WriteLine("refreshing access token");
                 var refreshed = await OAuth.Refresh(stored.RefreshToken);
-                TokenStore.Save(refreshed);
+                // Cached before the save: the old refresh token is already spent, so if the save
+                // fails this memory is the only copy of the credential there is.
                 _cached = refreshed;
+                try { TokenStore.Save(refreshed); }
+                catch (Exception e) { Console.Error.WriteLine($"token save failed (signed in until exit): {e.Message}"); }
                 return refreshed.AccessToken;
             }
-            catch (OAuthException e) when (e.Status is 400 or 401)
+            catch (OAuthException e) when (e.Status is 400 or 401 && OAuth.IsInvalidGrant(e.Body))
             {
-                // invalid_grant: the grant is dead and there is nothing left but to sign in again.
+                // The server says the grant itself is dead — not that the request was malformed or
+                // that a proxy hiccuped, which also arrive as 400s and must not cost the
+                // credential. There is nothing left but to sign in again.
                 SignOut();
                 throw new NotAuthenticatedException();
             }
