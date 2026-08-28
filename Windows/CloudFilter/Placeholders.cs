@@ -191,8 +191,7 @@ public static unsafe class Placeholders
             var flags = exclusive
                 ? CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_EXCLUSIVE
                 : CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_NONE;
-            HANDLE handle;
-            PInvoke.CfOpenFileWithOplock(path, flags, &handle).ThrowOnFailure();
+            PInvoke.CfOpenFileWithOplock(path, flags, out HANDLE handle).ThrowOnFailure();
             return new ProtectedHandle
             {
                 _handle = handle,
