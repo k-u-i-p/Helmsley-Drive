@@ -53,5 +53,11 @@ public static class TokenStore
         File.WriteAllBytes(TokenPath, ProtectedData.Protect(plain, null, DataProtectionScope.CurrentUser));
     }
 
-    public static void Clear() => File.Delete(TokenPath);
+    public static void Clear()
+    {
+        // File.Delete forgives a missing file but not a missing directory, and before the first
+        // sign-in there is neither.
+        try { File.Delete(TokenPath); }
+        catch (DirectoryNotFoundException) { }
+    }
 }
