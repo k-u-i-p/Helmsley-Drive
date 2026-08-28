@@ -10,9 +10,15 @@ placeholders, and answers `FETCH_DATA` by handing bytes back through `CfExecute`
 end in the dev VM, with Explorer showing dehydrated entries that hydrate on open.
 
 `RemoteStore.cs` is the seam. It declares the two calls the engine currently makes — `List` and
-`Fetch` — and `App/StubRemoteStore.cs` answers them from a hand-drawn tree so the filter could be
-exercised before the portal existed. The port replaces that stub; it should not need to change the
-interface to do it, though the interface will grow as writes arrive.
+`Fetch` — and `App/HelmsleyRemoteStore.cs` now answers them from the portal (the hand-drawn stub it
+replaced is gone). The interface did not change to do it, and will grow as writes arrive.
+
+Steps 1–4 below are ported (2026-08-28): `Configuration`, DPAPI `TokenStore`, `OAuth` with the
+custom-scheme redirect — Ben's call, see below — and the full `HelmsleyApi` surface, reads and
+writes, with `HelmsleyRemoteStore` adapting the two engine calls onto it. The writes are wired to
+nothing yet; that is step 6. What remains untested is the interactive sign-in itself, which needs a
+browser on the VM's desktop: run the app there once, sign in, and the mirror of the real tree is
+the end-to-end proof. Steps 5–6 are not started.
 
 ## What to port, in order
 
@@ -82,13 +88,13 @@ works. `Mac/Shared/ItemIdentity.swift` is worth reading in full anyway, for two 
 
 ## Decisions that are not the porting agent's to make
 
-**The OAuth redirect.** The Mac uses `helmsley-drive://oauth/callback`, which the portal already
-allows. Windows can honour that by registering the scheme under
-`HKCU\Software\Classes\helmsley-drive`, and that is the path that needs no server change. The
-alternative most Windows apps take — a loopback listener on `http://127.0.0.1:<port>/` — is the
-better fit for a desktop app that may not be installed, but it needs a new `redirect_uri` on the
-portal's allowlist. **Ask Ben before touching the portal.** Its repository is a separate checkout at
-`../Helmsley`.
+**The OAuth redirect.** Decided (Ben, 2026-08-28): the custom scheme, `helmsley-drive://oauth/callback`,
+which the portal already allows — no server change. `SignIn.cs` registers it under
+`HKCU\Software\Classes\helmsley-drive` on each sign-in; the browser launches a second instance of
+the app with the callback URL, which relays it over a named pipe to the instance that is waiting.
+The alternative — a loopback listener on `http://127.0.0.1:<port>/` — would need a new
+`redirect_uri` on the portal's allowlist. **Ask Ben before touching the portal.** Its repository is
+a separate checkout at `../Helmsley`.
 
 **Push.** The Mac registers with APNs for `.fileProvider` pushes and drops its poll to 15 minutes.
 None of that exists here. Polling only is the right first cut; whether Windows gets WNS at all is a
@@ -145,8 +151,10 @@ dotnet run --project App
 dotnet run --project App -- --unregister
 ```
 
-**The sync root is currently registered in the VM from the last test run.** Unregister before
-changing placeholder logic, or the stale tree will confuse the results.
+The stub-era sync root is unregistered and its tree set aside at
+`%USERPROFILE%\Helmsley Drive.stub-tree` (delete it when done with it), so the first real-portal
+run starts clean. In general: unregister before changing placeholder logic, or the stale tree will
+confuse the results.
 
 Anything long-running and elevated — installers above all — must go through a scheduled task
 (`schtasks /RL HIGHEST`) rather than straight over SSH: Windows kills SSH child processes on
