@@ -62,22 +62,26 @@ Mac/
     HelmsleyAPI.swift     every call to /api/files
     ItemIdentity.swift    what an NSFileProviderItemIdentifier means here
     PushTokenStore.swift  the APNs token the extension registered, where the app can withdraw it
-  AppShared/              the two container apps, not the extensions
+  AppShared/              the container apps' shared logic
     AppModel.swift        sign in, mount, unmount — the state behind both UIs
-    SignIn.swift          the OAuth sheet, anchored to an NSWindow or a UIWindow
-  FileProvider/           both extensions: items, enumerators, and the extension class itself
-  FileProviderUI/         macOS only: what Finder's own Sign In button opens — a dialog that
-                          relays the click to the app, where signing in actually happens
+    SignIn.swift          the OAuth sheet — also compiled into the iOS sign-in extension
+  FileProvider/           both provider extensions: items, enumerators, and the extension class
+  FileProviderUI/         what Finder's own Sign In button opens — a dialog that relays the
+                          click to the app, where signing in actually happens
   HelmsleyDrive/          macOS UI          HelmsleyDrive-iOS/    iOS UI
-                                            FileProvider-iOS/     iOS extension plist/entitlements
+                                            FileProvider-iOS/     iOS provider plist/entitlements
+                                            FileProviderUI-iOS/   Files' sign-in prompt, which
+                                                                  runs the OAuth sheet itself
   Tools/generate-icon.py        builds the app icons from the portal's H mark
   Tools/flatten-png.swift       strips alpha, which App Store icons may not have
 Windows/                  the Windows client — the same engine shape on the Cloud Filter API, in C#
 ```
 
-`AppShared/` is separate from `Shared/` for a reason the compiler enforces: `UIApplication.shared`,
-which presents the sign-in sheet, is barred outright inside an iOS app extension. An extension never
-signs in interactively, so that code has no business being compiled into one.
+`AppShared/` is separate from `Shared/` for a reason the compiler enforces: `AppModel` leans on
+`UIApplication`, which is barred outright inside an iOS app extension. `SignIn` no longer does —
+the window its sheet anchors to is the caller's to name — and that is exactly what lets the iOS
+sign-in extension compile it and run the same sheet from inside Files, where opening the app
+instead is not an option the platform offers.
 
 ### Identity
 
@@ -629,7 +633,9 @@ the credential; `TCC access check failed … Cocoa 257` is the app not being in 
 
 - **"Sign in" next to the volume in Finder** — the refresh token has expired (30 days) or was
   revoked. The button opens a dialog whose Open Helmsley Drive button hands the click to the app,
-  which opens the sign-in sheet at once; opening the app yourself does the same.
+  which opens the sign-in sheet at once; opening the app yourself does the same. On iOS the Files
+  app's own sign-in prompt runs the sheet in place instead, since an extension there cannot open
+  its app.
 - **"Keychain access failed: A required entitlement isn't present"** — the binary is not signed with
   the keychain-sharing entitlement. Check `codesign -d --entitlements - <app>` lists
   `<TEAMID>.uk.co.helmsley.HelmsleyDrive`; a build made with `CODE_SIGNING_ALLOWED=NO` has no

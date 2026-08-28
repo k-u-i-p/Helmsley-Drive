@@ -1,0 +1,3 @@
+ditto "$(xcodebuild -project HelmsleyDrive.xcodeproj -scheme HelmsleyDrive -configuration Debug \
+  -showBuildSettings | awk -F' = ' '/ BUILT_PRODUCTS_DIR/{print $2}')/HelmsleyDrive.app" \
+  "/Applications/Helmsley Drive.app"

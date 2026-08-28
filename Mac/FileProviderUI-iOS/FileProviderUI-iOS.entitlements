@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The keychain and nothing else: unlike its macOS twin, this extension runs the sign-in
+	     itself, so it has to be able to write the token set where the provider will read it. -->
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)uk.co.helmsley.HelmsleyDrive</string>
+	</array>
+</dict>
+</plist>

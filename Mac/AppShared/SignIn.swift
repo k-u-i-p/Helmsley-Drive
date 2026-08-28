@@ -1,10 +1,5 @@
 import AuthenticationServices
 import Foundation
-#if os(macOS)
-import AppKit
-#else
-import UIKit
-#endif
 
 /// Runs the OAuth authorization-code flow in a system browser sheet.
 ///
@@ -13,11 +8,21 @@ import UIKit
 /// staff to type credentials into whatever looks like Helmsley and cut the sheet off from the
 /// browser's own password autofill. It also owns the custom URL scheme for the duration, so the
 /// redirect comes back without this app having to register a handler that outlives the sign-in.
+///
+/// The window the sheet hangs off is the caller's to name, because the callers do not agree on how
+/// to find one: the apps ask their application object, and the Files sign-in extension — where
+/// `UIApplication` is barred outright — has only the window the system put its view in.
 @MainActor
 final class SignIn: NSObject {
 
     /// Held for the life of the sheet: releasing the session cancels it.
     private var session: ASWebAuthenticationSession?
+
+    private let anchor: () -> ASPresentationAnchor
+
+    init(anchor: @escaping () -> ASPresentationAnchor) {
+        self.anchor = anchor
+    }
 
     func run() async throws -> TokenSet {
         let pkce = OAuth.PKCE()
@@ -62,17 +67,7 @@ final class SignIn: NSObject {
 }
 
 extension SignIn: ASWebAuthenticationPresentationContextProviding {
-    /// The window the sheet hangs off. `ASPresentationAnchor` is an `NSWindow` on one platform and a
-    /// `UIWindow` on the other, which is the whole of the difference between them here.
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        #if os(macOS)
-        return NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first ?? ASPresentationAnchor()
-        #else
-        let window = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first { $0.isKeyWindow }
-        return window ?? ASPresentationAnchor()
-        #endif
+        anchor()
     }
 }

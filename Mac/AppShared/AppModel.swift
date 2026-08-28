@@ -20,7 +20,20 @@ final class AppModel: ObservableObject {
     @Published private(set) var isWorking = false
     @Published var errorMessage: String?
 
-    private let signIn = SignIn()
+    /// The sheet hangs off whatever window the app has up. `ASPresentationAnchor` is an `NSWindow`
+    /// on one platform and a `UIWindow` on the other, which is the whole of the difference between
+    /// them here.
+    private let signIn = SignIn(anchor: {
+        #if os(macOS)
+        return NSApplication.shared.keyWindow ?? NSApplication.shared.windows.first ?? ASPresentationAnchor()
+        #else
+        let window = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }
+        return window ?? ASPresentationAnchor()
+        #endif
+    })
 
     var isSignedIn: Bool { admin != nil }
 
@@ -74,6 +87,12 @@ final class AppModel: ObservableObject {
             self.admin = try await HelmsleyAPI.shared.whoami()
             try await Self.addDomain()
             self.isMounted = true
+
+            // The system throttles a domain that reported .notAuthenticated and keeps its Sign In
+            // banner up until told otherwise; this is the telling. Best-effort, because the state
+            // it clears may simply not exist — a first sign-in has no error to resolve.
+            try? await NSFileProviderManager(for: Self.domain)?
+                .signalErrorResolved(NSFileProviderError(.notAuthenticated))
         }
     }
 
