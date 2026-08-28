@@ -40,8 +40,10 @@ try
     await mirror.SyncPass();
     Check("startup asks the portal for nothing", portal.Log.Count == 0);
 
-    // These existence checks are themselves the enumeration: looking inside an unpopulated
-    // directory is what triggers FETCH_PLACEHOLDERS, so the tree appears because it is looked at.
+    // Enumerating is what Explorer does when a folder is opened, and enumeration of an
+    // unpopulated directory is what triggers FETCH_PLACEHOLDERS — a bare path lookup may not.
+    Look(root);
+    Look(Path.Combine(root, "Docs"));
     Check("the tree appears as it is looked at",
         Directory.Exists(Path.Combine(root, "Docs"))
         && File.Exists(Path.Combine(root, "Docs", "a.txt"))
@@ -163,6 +165,13 @@ void Run(string command)
     cmd.WaitForExit();
     Console.WriteLine($"  $ {command}" + (cmd.ExitCode == 0 ? "" : $"  => exit {cmd.ExitCode}"));
     if (output.Length > 0) Console.WriteLine($"    {output.ReplaceLineEndings("\n    ")}");
+}
+
+// Opening a folder, as Explorer does it: a full enumeration of the directory.
+void Look(string directory)
+{
+    try { _ = Directory.EnumerateFileSystemEntries(directory).ToList(); }
+    catch (Exception e) { Console.WriteLine($"  look at {directory}: {e.Message}"); }
 }
 
 void Probe(string path)
