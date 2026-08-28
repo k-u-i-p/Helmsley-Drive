@@ -24,9 +24,10 @@ public static unsafe class Placeholders
     const int ERROR_SHARING_VIOLATION = unchecked((int)0x80070020);
 
     /// <summary>
-    /// The exclusive open loses races with everything that pounces on a fresh entry — the search
-    /// indexer, the antimalware scan — and those handles live for moments. A short retry is the
-    /// difference between an update that works and one that fails whenever anything else looks.
+    /// Everything that pounces on a fresh entry — the search indexer, the antimalware scan —
+    /// holds handles that live for moments, and a write can lose the race to any of them. A short
+    /// retry is the difference between an update that works and one that fails whenever anything
+    /// else looks.
     /// </summary>
     static void SharingRetries(Action attempt)
     {
@@ -204,8 +205,11 @@ public static unsafe class Placeholders
     /// </summary>
     sealed class ProtectedHandle : IDisposable
     {
-        // Disposing it is the CfCloseHandle; the win32 handle below is the same handle seen
-        // plainly, and is not separately owned.
+        // A protected handle is not a file handle but a structure holding one, and only
+        // CfCloseHandle takes it apart. CsWin32 hands it out as a plain SafeFileHandle, whose own
+        // disposal would CloseHandle the structure pointer — a silent no-op that leaks the real
+        // handle inside, and a leaked write handle is a file nothing can touch until the process
+        // dies. So it is closed properly here and the SafeFileHandle is told it already happened.
         Microsoft.Win32.SafeHandles.SafeFileHandle? _handle;
         public HANDLE Win32Handle { get; private set; }
 
@@ -227,7 +231,9 @@ public static unsafe class Placeholders
 
         public void Dispose()
         {
-            _handle?.Dispose();
+            if (_handle is null || _handle.IsInvalid) return;
+            PInvoke.CfCloseHandle((HANDLE)_handle.DangerousGetHandle());
+            _handle.SetHandleAsInvalid();
             _handle = null;
         }
     }
