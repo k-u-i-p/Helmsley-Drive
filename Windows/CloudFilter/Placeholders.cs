@@ -183,7 +183,9 @@ public static unsafe class Placeholders
     /// </summary>
     sealed class ProtectedHandle : IDisposable
     {
-        HANDLE _handle;
+        // Disposing it is the CfCloseHandle; the win32 handle below is the same handle seen
+        // plainly, and is not separately owned.
+        Microsoft.Win32.SafeHandles.SafeFileHandle? _handle;
         public HANDLE Win32Handle { get; private set; }
 
         public static ProtectedHandle Open(string path, bool exclusive)
@@ -191,18 +193,18 @@ public static unsafe class Placeholders
             var flags = exclusive
                 ? CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_EXCLUSIVE
                 : CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_NONE;
-            PInvoke.CfOpenFileWithOplock(path, flags, out HANDLE handle).ThrowOnFailure();
+            PInvoke.CfOpenFileWithOplock(path, flags, out var handle).ThrowOnFailure();
             return new ProtectedHandle
             {
                 _handle = handle,
-                Win32Handle = PInvoke.CfGetWin32HandleFromProtectedHandle(handle),
+                Win32Handle = PInvoke.CfGetWin32HandleFromProtectedHandle((HANDLE)handle.DangerousGetHandle()),
             };
         }
 
         public void Dispose()
         {
-            if (_handle != default) PInvoke.CfCloseHandle(_handle);
-            _handle = default;
+            _handle?.Dispose();
+            _handle = null;
         }
     }
 }
