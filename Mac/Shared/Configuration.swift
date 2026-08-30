@@ -14,7 +14,7 @@ enum Configuration {
     /// else, so there is no address for anyone to get wrong.
     static let baseURL = URL(string: "https://helmsley-clients.co.uk")!
 
-    /// The OAuth client this app is registered as, matching `mcp.clients[].clientId` in the
+    /// The OAuth client this app is registered as, matching `oauth.clients[].clientId` in the
     /// portal's config.json. A public client: it ships to laptops, so it holds no secret, and PKCE
     /// is what binds an authorization code to the process that asked for it.
     static let oauthClientID = "helmsley-drive"

@@ -14,13 +14,17 @@ public static class Configuration
     public static readonly Uri BaseUri = new("https://helmsley-clients.co.uk");
 
     /// <summary>
-    /// The OAuth client this app is registered as, matching <c>mcp.clients[].clientId</c> in the
+    /// The OAuth client this app is registered as, matching <c>oauth.clients[].clientId</c> in the
     /// portal's config.json. A public client: it ships to laptops, so it holds no secret, and PKCE
     /// is what binds an authorization code to the process that asked for it.
     /// </summary>
     public const string OAuthClientId = "helmsley-drive";
 
-    public const string OAuthScope = "mcp";
+    /// <summary>
+    /// What this app is for: 'drive' opens the file-sync API and nothing else. The portal grants
+    /// by our registration either way, but asking for what we mean keeps the consent honest.
+    /// </summary>
+    public const string OAuthScope = "drive";
 
     /// <summary>
     /// The same custom scheme the Mac uses, already on the portal's allowlist. Windows honours it

@@ -1,9 +1,8 @@
 import CryptoKit
 import Foundation
 
-/// Talks to the portal's OAuth endpoints. The authorization server is the one the MCP connector
-/// already uses (`backend/routes/admin/mcp/`), mounted at the site root, so `/authorize` and
-/// `/token` are absolute paths rather than anything under `/api`.
+/// Talks to the portal's OAuth endpoints (`backend/routes/oauth/`), mounted at the site root, so
+/// `/authorize` and `/token` are absolute paths rather than anything under `/api`.
 enum OAuth {
 
     struct TokenResponse: Decodable {
@@ -41,7 +40,9 @@ enum OAuth {
             URLQueryItem(name: "code_challenge", value: pkce.challenge),
             URLQueryItem(name: "code_challenge_method", value: "S256"),
             URLQueryItem(name: "state", value: state),
-            URLQueryItem(name: "scope", value: "mcp"),
+            // What this app is for: 'drive' opens the file-sync API and nothing else. The portal grants
+            // by our registration either way, but asking for what we mean keeps the consent honest.
+            URLQueryItem(name: "scope", value: "drive"),
         ]
         return components.url!
     }

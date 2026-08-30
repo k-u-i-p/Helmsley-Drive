@@ -6,9 +6,9 @@ using System.Text.Json.Serialization;
 namespace HelmsleyDrive.App;
 
 /// <summary>
-/// Talks to the portal's OAuth endpoints. The authorization server is the one the MCP connector
-/// already uses, mounted at the site root, so <c>/authorize</c> and <c>/token</c> are absolute
-/// paths rather than anything under <c>/api</c>.
+/// Talks to the portal's OAuth endpoints (<c>backend/routes/oauth/</c>), mounted at the site
+/// root, so <c>/authorize</c> and <c>/token</c> are absolute paths rather than anything under
+/// <c>/api</c>.
 /// </summary>
 public static class OAuth
 {
