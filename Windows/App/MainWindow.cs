@@ -60,8 +60,42 @@ public sealed class MainWindow : Window
 
     UIElement Build()
     {
-        // Header: the mark and the sentence. A stock cloud glyph until the app has an icon of its
-        // own — the same placeholder standing the sync root's Explorer entry uses.
+        var layout = new Grid { Margin = new Thickness(24) };
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                       // header
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                       // separator
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                       // panels
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                       // error
+        layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // spacer
+        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                       // footer
+
+        var header = Header();
+        var separator = new Separator { Margin = new Thickness(0, 16, 0, 16) };
+
+        // Both panels, stacked and shown one at a time: the window has exactly two states and
+        // Render picks between them rather than rebuilding either.
+        BuildConnected();
+        BuildDisconnected();
+        var panels = new Grid();
+        panels.Children.Add(_connected);
+        panels.Children.Add(_disconnected);
+
+        Grid.SetRow(header, 0);
+        Grid.SetRow(separator, 1);
+        Grid.SetRow(panels, 2);
+        Grid.SetRow(_error, 3);
+        Grid.SetRow(_busy, 5);
+
+        layout.Children.Add(header);
+        layout.Children.Add(separator);
+        layout.Children.Add(panels);
+        layout.Children.Add(_error);
+        layout.Children.Add(_busy);
+        return layout;
+    }
+
+    /// <summary>The mark and the sentence — a stock cloud glyph until the app has an icon of its own.</summary>
+    UIElement Header()
+    {
         var glyph = new TextBlock
         {
             Text = "\uE753", // Cloud
@@ -82,8 +116,12 @@ public sealed class MainWindow : Window
         var header = new StackPanel { Orientation = Orientation.Horizontal };
         header.Children.Add(glyph);
         header.Children.Add(titles);
+        return header;
+    }
 
-        // The signed-in panel: identity, mount state, and the buttons.
+    /// <summary>Signed in: who, whether the drive is up, and the button for whichever is not true.</summary>
+    void BuildConnected()
+    {
         var check = new TextBlock
         {
             Text = "\uE930", // Completed, the circled check
@@ -109,8 +147,11 @@ public sealed class MainWindow : Window
         _connected.Children.Add(identityRow);
         _connected.Children.Add(_mountState);
         _connected.Children.Add(buttons);
+    }
 
-        // The signed-out panel: what signing in is for, and the button that starts it.
+    /// <summary>Signed out: what signing in is for, and what it will ask of them.</summary>
+    void BuildDisconnected()
+    {
         _disconnected.Children.Add(new TextBlock
         {
             Text = "Sign in with your Helmsley administrator account to mount the document tree as a drive in File Explorer.",
@@ -128,31 +169,6 @@ public sealed class MainWindow : Window
         });
         _signInButton.Margin = new Thickness(0, 14, 0, 0);
         _disconnected.Children.Add(_signInButton);
-
-        var layout = new Grid { Margin = new Thickness(24) };
-        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                       // header
-        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                       // separator
-        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                       // panels
-        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                       // error
-        layout.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // spacer
-        layout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                       // footer
-
-        var separator = new Separator { Margin = new Thickness(0, 16, 0, 16) };
-        Grid.SetRow(header, 0);
-        Grid.SetRow(separator, 1);
-        var panels = new Grid();
-        panels.Children.Add(_connected);
-        panels.Children.Add(_disconnected);
-        Grid.SetRow(panels, 2);
-        Grid.SetRow(_error, 3);
-        Grid.SetRow(_busy, 5);
-
-        layout.Children.Add(header);
-        layout.Children.Add(separator);
-        layout.Children.Add(panels);
-        layout.Children.Add(_error);
-        layout.Children.Add(_busy);
-        return layout;
     }
 
     void Render()

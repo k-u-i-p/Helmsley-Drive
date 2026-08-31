@@ -38,10 +38,12 @@ public static class Configuration
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Helmsley Drive");
 
     /// <summary>
-    /// How often the whole tree is re-listed. The portal has no change feed and Windows has no
-    /// push yet (PORTING.md reserves that question), so polling is the only way remote changes
-    /// arrive. The Mac asks every 30 seconds — but only for folders someone is looking at; this
-    /// walks everything, one request per folder, so it goes gentler on the portal.
+    /// How often the materialised folders are re-listed — the ones somebody has opened, which is
+    /// the only set either side ever polls. The portal has no change feed and Windows has no push
+    /// yet (PORTING.md reserves that question), so this is the only way a remote change arrives.
+    /// The Mac asks every 30 seconds over the same set; this asks less often because nothing here
+    /// is waiting on a Finder that refuses to re-enumerate, and a listing per opened folder every
+    /// five minutes is gentle enough to leave running for days.
     /// </summary>
     public static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(5);
 }

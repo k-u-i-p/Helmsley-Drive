@@ -1,4 +1,3 @@
-using Windows.Win32;
 using Windows.Win32.Foundation;
 using Windows.Win32.Storage.CloudFilters;
 
@@ -33,8 +32,6 @@ public static unsafe class LocalChanges
         Console.WriteLine($"  [{kind}] pid={pid}{(pid == OwnProcessId ? " (self)" : "")} {detail}");
     }
 
-    const int STATUS_ACCESS_DENIED = unchecked((int)0xC0000022);
-
     static bool IsOwnEvent(CF_CALLBACK_INFO* info) =>
         info->ProcessInfo is not null && info->ProcessInfo->ProcessId == OwnProcessId;
 
@@ -46,68 +43,98 @@ public static unsafe class LocalChanges
         return path.StartsWith('\\') ? volume + path : volume + '\\' + path;
     }
 
-    static string Identity(CF_CALLBACK_INFO* info) =>
-        info->FileIdentity is null
-            ? ""
-            : new string((char*)info->FileIdentity, 0, (int)(info->FileIdentityLength / sizeof(char)));
-
     // MARK: - Close: the save and the create
 
     internal static void OnCloseCompletion(CF_CALLBACK_INFO* info, CF_CALLBACK_PARAMETERS* parameters)
     {
-        Note(info, "close", FullPath(info, info->NormalizedPath));
-        if (IsOwnEvent(info) || Mirror is not { } mirror) return;
-        if ((parameters->Anonymous.CloseCompletion.Flags
-            & CF_CALLBACK_CLOSE_COMPLETION_FLAGS.CF_CALLBACK_CLOSE_COMPLETION_FLAG_DELETED) != 0) return;
+        try
+        {
+            Note(info, "close", FullPath(info, info->NormalizedPath));
+            if (IsOwnEvent(info) || Mirror is not { } mirror) return;
+            if ((parameters->Anonymous.CloseCompletion.Flags
+                & CF_CALLBACK_CLOSE_COMPLETION_FLAGS.CF_CALLBACK_CLOSE_COMPLETION_FLAG_DELETED) != 0) return;
 
-        var path = FullPath(info, info->NormalizedPath);
-        // Off the filter's thread: an upload can run for minutes, and holding the callback would
-        // hold every other notification with it. Nothing here is acknowledged, so nothing waits.
-        _ = Task.Run(() => mirror.OnClosed(path));
+            // Off the filter's thread: an upload can run for minutes, and holding the callback would
+            // hold every other notification with it. Nothing here is acknowledged, so nothing waits.
+            mirror.Spawn(FullPath(info, info->NormalizedPath), mirror.OnClosed);
+        }
+        catch (Exception e) { Callbacks.Fell("close-completion", e); }
     }
 
     // MARK: - Rename: the rename, the move, and the drag to the bin
 
     internal static void OnRename(CF_CALLBACK_INFO* info, CF_CALLBACK_PARAMETERS* parameters)
     {
-        Note(info, "rename", $"{FullPath(info, info->NormalizedPath)} -> {FullPath(info, parameters->Anonymous.Rename.TargetPath)}");
         var allowed = true;
-        if (!IsOwnEvent(info) && Mirror is { } mirror)
+        try
         {
-            var source = FullPath(info, info->NormalizedPath);
-            var target = FullPath(info, parameters->Anonymous.Rename.TargetPath);
-            allowed = mirror.OnRenaming(source, target, Identity(info));
+            Note(info, "rename", $"{FullPath(info, info->NormalizedPath)} -> {FullPath(info, parameters->Anonymous.Rename.TargetPath)}");
+            if (!IsOwnEvent(info) && Mirror is { } mirror)
+            {
+                var source = FullPath(info, info->NormalizedPath);
+                var target = FullPath(info, parameters->Anonymous.Rename.TargetPath);
+
+                // The platform's own answer to "is this inside the drive", rather than a prefix
+                // test on the path: it has already expanded short names and resolved mount points,
+                // and a junction or a subst'd drive is exactly where a string comparison and the
+                // filter would disagree — with a plain rename read as a drag out of the drive, and
+                // the row binned for it.
+                var flags = parameters->Anonymous.Rename.Flags;
+                var sourceIn = (flags & CF_CALLBACK_RENAME_FLAGS.CF_CALLBACK_RENAME_FLAG_SOURCE_IN_SCOPE) != 0;
+                var targetIn = (flags & CF_CALLBACK_RENAME_FLAGS.CF_CALLBACK_RENAME_FLAG_TARGET_IN_SCOPE) != 0;
+
+                allowed = mirror.OnRenaming(source, target, Callbacks.Identity(info), sourceIn, targetIn);
+            }
         }
+        catch (Exception e)
+        {
+            Callbacks.Fell("rename", e);
+            allowed = false;
+        }
+        // Outside the catch: the filter is holding the user's rename, and the one thing worse than
+        // refusing it is never answering at all.
         Acknowledge(info, CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_RENAME, allowed);
     }
 
     internal static void OnRenameCompletion(CF_CALLBACK_INFO* info, CF_CALLBACK_PARAMETERS* parameters)
     {
-        Note(info, "renamed", $"{FullPath(info, parameters->Anonymous.RenameCompletion.SourcePath)} -> {FullPath(info, info->NormalizedPath)}");
-        if (IsOwnEvent(info) || Mirror is not { } mirror) return;
+        try
+        {
+            Note(info, "renamed", $"{FullPath(info, parameters->Anonymous.RenameCompletion.SourcePath)} -> {FullPath(info, info->NormalizedPath)}");
+            if (IsOwnEvent(info) || Mirror is not { } mirror) return;
 
-        // The one case the pre-rename callback cannot answer for: something arriving from outside
-        // the root. A move closes no handles, so this completion is its only announcement.
-        var source = FullPath(info, parameters->Anonymous.RenameCompletion.SourcePath);
-        var target = FullPath(info, info->NormalizedPath);
-        if (mirror.IsUnderRoot(source) || !mirror.IsUnderRoot(target)) return;
-        _ = Task.Run(() => mirror.OnArrival(target));
+            // The one case the pre-rename callback cannot answer for: something arriving from outside
+            // the root. A move closes no handles, so this completion is its only announcement.
+            var source = FullPath(info, parameters->Anonymous.RenameCompletion.SourcePath);
+            var target = FullPath(info, info->NormalizedPath);
+            if (mirror.IsUnderRoot(source) || !mirror.IsUnderRoot(target)) return;
+            mirror.Spawn(target, mirror.OnArrival);
+        }
+        catch (Exception e) { Callbacks.Fell("rename-completion", e); }
     }
 
     // MARK: - Delete
 
     internal static void OnDelete(CF_CALLBACK_INFO* info, CF_CALLBACK_PARAMETERS* parameters)
     {
-        Note(info, "delete", FullPath(info, info->NormalizedPath));
         var allowed = true;
-        if (!IsOwnEvent(info) && Mirror is { } mirror)
+        try
         {
-            var path = FullPath(info, info->NormalizedPath);
-            var undelete = (parameters->Anonymous.Delete.Flags
-                & CF_CALLBACK_DELETE_FLAGS.CF_CALLBACK_DELETE_FLAG_IS_UNDELETE) != 0;
-            allowed = undelete
-                ? mirror.OnUndeleting(path, Identity(info))
-                : mirror.OnDeleting(path, Identity(info));
+            Note(info, "delete", FullPath(info, info->NormalizedPath));
+            if (!IsOwnEvent(info) && Mirror is { } mirror)
+            {
+                var path = FullPath(info, info->NormalizedPath);
+                var undelete = (parameters->Anonymous.Delete.Flags
+                    & CF_CALLBACK_DELETE_FLAGS.CF_CALLBACK_DELETE_FLAG_IS_UNDELETE) != 0;
+                allowed = undelete
+                    ? mirror.OnUndeleting(path, Callbacks.Identity(info))
+                    : mirror.OnDeleting(path, Callbacks.Identity(info));
+            }
+        }
+        catch (Exception e)
+        {
+            Callbacks.Fell("delete", e);
+            allowed = false;
         }
         Acknowledge(info, CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_DELETE, allowed);
     }
@@ -116,22 +143,25 @@ public static unsafe class LocalChanges
 
     static void Acknowledge(CF_CALLBACK_INFO* info, CF_OPERATION_TYPE type, bool allowed)
     {
-        var op = new CF_OPERATION_INFO
-        {
-            StructSize = (uint)sizeof(CF_OPERATION_INFO),
-            Type = type,
-            ConnectionKey = info->ConnectionKey,
-            TransferKey = info->TransferKey,
-            RequestKey = info->RequestKey,
-        };
+        var operation = Callbacks.OperationOn(info, type);
 
-        var parameters = new CF_OPERATION_PARAMETERS { ParamSize = (uint)sizeof(CF_OPERATION_PARAMETERS) };
-        var status = new NTSTATUS(allowed ? 0 : STATUS_ACCESS_DENIED);
+        var parameters = new CF_OPERATION_PARAMETERS();
+        // A refusal has to be said in the platform's own vocabulary: anything outside the
+        // STATUS_CLOUD_FILE_ range is flattened to "unsuccessful" before Explorer words it, so a
+        // plain access-denied and a plain failure reach the user as the same shrug.
+        var status = new NTSTATUS(allowed ? 0 : Callbacks.STATUS_CLOUD_FILE_ACCESS_DENIED);
         if (type == CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_RENAME)
+        {
+            parameters.ParamSize = Callbacks.ParamSize(&parameters, &parameters.Anonymous.AckRename);
             parameters.Anonymous.AckRename.CompletionStatus = status;
+        }
         else
+        {
+            parameters.ParamSize = Callbacks.ParamSize(&parameters, &parameters.Anonymous.AckDelete);
             parameters.Anonymous.AckDelete.CompletionStatus = status;
+        }
 
-        PInvoke.CfExecute(in op, ref parameters).ThrowOnFailure();
+        Callbacks.Executed(type == CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_RENAME ? "ack-rename" : "ack-delete",
+            in operation, ref parameters);
     }
 }

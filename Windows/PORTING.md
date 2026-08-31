@@ -1,7 +1,8 @@
 # Porting the engine to Windows
 
-What exists is a skeleton with a stub portal behind it: the Cloud Filter side is real and proven,
-and everything that talks to Helmsley is not written yet. This is the note for whoever writes it.
+The engine is written and so is the portal client behind it. What is untested is the seam between
+them against the live server. This is the note for whoever picks that up — and the record of what
+the filter does that no documentation says.
 
 ## Where the line sits
 
@@ -9,17 +10,26 @@ and everything that talks to Helmsley is not written yet. This is the note for w
 placeholders, and answers `FETCH_DATA` by handing bytes back through `CfExecute` — verified end to
 end in the dev VM, with Explorer showing dehydrated entries that hydrate on open.
 
-`RemoteStore.cs` is the seam. It declares the two calls the engine currently makes — `List` and
-`Fetch` — and `App/HelmsleyRemoteStore.cs` now answers them from the portal (the hand-drawn stub it
-replaced is gone). The interface did not change to do it, and will grow as writes arrive.
+`RemoteStore.cs` is the seam. It declares everything the engine asks of the portal — `List` and
+`Fetch` down, and the writes the local callbacks map onto up — and `App/HelmsleyRemoteStore.cs`
+answers all of them from the portal. The hand-drawn stub it replaced is gone; `Harness/` keeps a
+fake on the far side so the engine can still be run without one. Two things the seam carries that
+are easy to lose: every listing crosses it through `ListLocally`, so no caller has to remember to
+legalise names, and `Restore(id, folderId)` and `RestoreWhereItWas(id)` are separate calls because
+the portal reads a destination it was given as the caller saying where — "the root" and "wherever
+it came from" are different sentences and must not be spelled the same way.
 
 All six steps below are ported (2026-08-28): `Configuration`, DPAPI `TokenStore`, `OAuth` with the
 custom-scheme redirect — Ben's call, see below — the full `HelmsleyApi` surface behind
 `HelmsleyRemoteStore`, snapshot-diffed change tracking (`Mirror` + `SnapshotStore`), and the local
 write path (`LocalChanges` + the watcher in `Mirror`), each local event mapped onto the portal call
-it means. The engine is exercised end to end by `Windows/Harness/` against an in-memory portal —
-`dotnet run --project Harness` in the VM, ALL PASSED — which proves everything below the
-`IRemoteStore` seam. What remains untested is the seam's far side against the live portal, and that
+it means. The engine is exercised by `Windows/Harness/` against an in-memory portal — `dotnet run --project
+Harness` in the VM — which covers the paths a browsing user walks: population, the diff, hydration,
+each local write mapped onto its portal call including a refusal, two portal names that collapse to
+one legal one, a declared folder materialising under a real row id, and a cold start whose snapshot
+did not survive. It does not cover the undelete, a move *into* the root, a failed fetch, or a portal
+slow enough to outlast the filter's patience with a held rename; those are read code, not run code.
+What remains untested is the seam's far side against the live portal, and that
 is gated on the interactive sign-in, which needs a browser on the VM's desktop: run the app there
 once, sign in, and the mirror of the real tree is the proof.
 
@@ -100,6 +110,15 @@ the app with the callback URL, which relays it over a named pipe to the instance
 The alternative — a loopback listener on `http://127.0.0.1:<port>/` — would need a new
 `redirect_uri` on the portal's allowlist. **Ask Ben before touching the portal.** Its repository is
 a separate checkout at `../Helmsley`.
+
+**What a sign-out leaves behind.** `--sign-out` and the window's Sign Out clear the credential and
+the snapshots and leave the tree on disk, where the Mac removes the domain and with it the replica.
+The pass now re-mirrors that tree rather than freezing on it, but two things still follow from
+leaving it: a row removed while nothing was running is never noticed, because the snapshot that
+would have known about it is gone; and the placeholders are left dehydrated under a registration
+that may go away, which Microsoft's own guidance says to undo with `CfRevertPlaceholder` first.
+Whether sign-out should delete the tree, revert it, or go on leaving it is Ben's call, not the
+porting agent's.
 
 **Push.** The Mac registers with APNs for `.fileProvider` pushes and drops its poll to 15 minutes.
 None of that exists here. Polling only is the right first cut; whether Windows gets WNS at all is a
@@ -191,7 +210,10 @@ Learned in the harness, each the hard way. The engine already copes with all of 
 next person believes the code.
 
 - **Notifications are for placeholders only.** An ordinary file — which is what everything a user
-  creates begins as — is written, renamed and deleted in silence. And an overwriting save
+  creates begins as — is written, renamed and deleted in silence. The watcher covers the first two
+  and not the third: it listens for arrivals and writes, so a local file deleted before its upload
+  gave it a row is simply gone, and everything past `Placeholders.Convert` is a placeholder that
+  `NOTIFY_DELETE` answers for. And an overwriting save
   (`CREATE_ALWAYS`, which is how `cmd`'s `>` and plenty of editors write) strips a placeholder back
   to an ordinary file, taking its identity with it. Hence the watcher, and hence the rule that
   bytes wearing a name the folder's snapshot already knows are a save over that row, never a new
@@ -207,14 +229,58 @@ next person believes the code.
   own enumeration of an unpopulated directory sees it raw and empty. Explorer is a foreign process
   so users never notice, and the harness has to "look" through a `cmd` child for the same reason —
   but nothing in the engine may assume its own `Directory.Enumerate` populates anything.
-- **Population is on demand, root included.** The registration is `CF_POPULATION_POLICY_PARTIAL`:
-  opening the drive costs nothing, a folder's entries are fetched (`Populator`) the first time a
-  foreign process looks inside it, and that listing becomes the folder's snapshot — "materialised"
-  — which is what admits it to the poll. The sync pass walks materialised folders only, so the
-  portal answers for what is being watched, never for everything it holds.
-- **Do not demand exclusivity to write.** The search indexer and the antimalware scan keep shared
-  handles on anything fresh; `CF_OPEN_FILE_FLAG_WRITE_ACCESS` coexists with them where
-  `CF_OPEN_FILE_FLAG_EXCLUSIVE` loses, and a short sharing-violation retry covers the rest.
+- **Population is on demand, root included.** The registration asks for
+  `StorageProviderPopulationPolicy.Full` — the on-demand one, whatever the name suggests;
+  `AlwaysFull` is the eager one it replaced, and `CF_POPULATION_POLICY_PARTIAL` is a cldapi-era name
+  the platform does not support. Opening the drive costs nothing, a folder's entries are fetched
+  (`Populator`) the first time a foreign process looks inside it, and that listing becomes the
+  folder's snapshot — "materialised" — which is what admits it to the poll. The sync pass walks
+  materialised folders only, so the portal answers for what is being watched, never for everything
+  it holds.
+
+- **The fully-populated mark is conditional, and it is permanent.** `DISABLE_ON_DEMAND_POPULATION`
+  is honoured only if every placeholder in that transfer was created, so `Populator` checks
+  `EntriesProcessed` and each entry's own `Result` before it calls the folder materialised — one
+  refused entry and the filter will ask again, which is the retry. And the mark it does set lives on
+  the directory on disk, outlasting the registration and the snapshot both: a folder whose snapshot
+  is gone would be asked about by nobody, so `Mirror.SyncPass` falls back to "does the directory
+  hold entries" for what counts as materialised. Without that, a sign-out that left the tree behind
+  froze the whole drive for good.
+
+- **Notifications are not the platform's only opinion about scope.** `CF_CALLBACK_RENAME_FLAG_
+  SOURCE_IN_SCOPE` and `_TARGET_IN_SCOPE` say whether each end of a rename is inside the sync root,
+  already normalised — short names expanded, mount points resolved. A prefix test on the path agrees
+  with them right up until a junction or a subst'd drive, where it reads a plain rename as a drag
+  out of the drive and bins the row for it.
+- **Do not demand exclusivity to write — except to dehydrate.** The search indexer and the
+  antimalware scan keep shared handles on anything fresh; `CF_OPEN_FILE_FLAG_WRITE_ACCESS` coexists
+  with them where `CF_OPEN_FILE_FLAG_EXCLUSIVE` loses, and a short sharing-violation retry covers
+  the rest. `CF_UPDATE_FLAG_DEHYDRATE` is the exception: the platform documents an exclusive handle
+  as its precondition and does not check it, so dropping bytes on a shared handle is a data
+  corruption nothing reports.
+
+  `CF_UPDATE_FLAG_VERIFY_IN_SYNC` looks like the guard that belongs beside it and is not. It refuses
+  the update unless the placeholder is in sync *now*, and under `TRACK_ALL` a rename clears in-sync
+  as readily as a write — so a listing that renamed a file and changed its bytes in one pass had its
+  dehydrate refused, kept the stale bytes, and then read the size disagreement as a local edit to
+  push back over the portal's newer version. The `DataDirty` check under the same oplock is the
+  precise version of the same question. The harness catches this one.
+
+- **A refusal has to be said in the platform's own vocabulary.** Any `CompletionStatus` outside the
+  `STATUS_CLOUD_FILE_` range is flattened to `STATUS_CLOUD_FILE_UNSUCCESSFUL` before Explorer words
+  it, so a plain `STATUS_ACCESS_DENIED` and a plain failure reach the user as the same shrug.
+
+- **Nothing may be thrown out of a callback.** The filter calls in through delegates on its own
+  threads and there is no managed frame above them: an exception does not fail an operation, it
+  unwinds into `cldflt` and takes the process with it — which the user sees as the drive going
+  silent and every placeholder becoming unopenable until the app is restarted. `Callbacks.cs` is
+  that boundary. `CfExecute` failing is an ordinary lost race (a request already cancelled, a handle
+  already closed) and is a line in the log.
+
+- **A callback has sixty seconds, and every accepted `CfExecute` restarts the clock.** Which is why
+  `Hydrator` streams the bytes through in chunks rather than downloading the file and then speaking:
+  a whole-file fetch held before the first word is a file that can never be opened over a slow
+  enough link, however many times the user tries.
 - **`CfRegisterSyncRoot` gives you the filter, not the shell.** A root registered that way works —
   and mounts as a plain folder in the user's profile, with no entry in Explorer's navigation pane.
   `StorageProviderSyncRootManager.Register` is the same plumbing plus the shell: the sidebar
@@ -244,6 +310,14 @@ one and the differences cost an afternoon:
   closes one; `Placeholders.ProtectedHandle` does exactly that and tells the `SafeFileHandle` it
   already happened. This was an afternoon.
 - Paths want `PCWSTR`; `fixed (char* p = s)` is the shortest way there.
+- `CfCreatePlaceholders` reports a per-entry failure in its own return value *as well as* in the
+  entry's `Result`, because without `STOP_ON_ERROR` it answers with the first error it met and
+  carries on. Throwing on the return value before reading the entry's makes the
+  `ERROR_ALREADY_EXISTS` branch — which is how a re-run over an existing tree refreshes rather than
+  duplicates — unreachable, and every entry of every pass fails.
+- `CF_OPERATION_PARAMETERS.ParamSize` is the offset of the operation's own member plus that member's
+  size (`CF_SIZE_OF_OP_PARAM` in the C header), not `sizeof` the union — which overstates an
+  acknowledgement threefold. Tolerated today, documented nowhere.
 - Target `net8.0-windows10.0.17763.0` or later, or every call raises CA1416.
 
 Add new functions to `NativeMethods.txt` and the bindings appear on the next build.

@@ -9,6 +9,8 @@
     <RootNamespace>HelmsleyDrive.App</RootNamespace>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- longPathAware and PerMonitorV2; see the manifest for why each is load-bearing. -->
+    <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
     <!-- The desktop SDK drops these from the implicit set; the App sources were written against

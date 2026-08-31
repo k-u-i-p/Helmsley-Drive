@@ -10,10 +10,10 @@ namespace HelmsleyDrive.CloudFilter;
 /// is not a verdict — the platform clears it for a rename as readily as for a write — so whether
 /// the *bytes* differ is carried separately, and only the two together mean a save to upload.
 /// </summary>
-public sealed record PlaceholderState(string Id, bool InSync, bool DataModified)
+public sealed record PlaceholderState(string Id, bool InSync, bool HasModifiedBytes)
 {
     /// <summary>Local bytes the portal has not seen. The one state that means an upload.</summary>
-    public bool DataDirty => DataModified && !InSync;
+    public bool DataDirty => HasModifiedBytes && !InSync;
 }
 
 /// <summary>
@@ -49,17 +49,6 @@ public static unsafe class Placeholders
         }
     }
 
-    public static void Create(string directory, IEnumerable<RemoteItem> items)
-    {
-        // One placeholder per call: the create-info wants pinned name and identity strings, and
-        // pinning a batch of them buys nothing at portal folder sizes.
-        foreach (var item in items) CreateOne(directory, item);
-    }
-
-    /// <summary>
-    /// Creates one placeholder, or brings an existing one up to date — which is what a re-run of
-    /// the mirror, or a create racing a local save's conversion, turns creation into.
-    /// </summary>
     /// <summary>
     /// One entry as the filter wants it described — for CfCreatePlaceholders and for a
     /// TRANSFER_PLACEHOLDERS population alike. A folder is left unpopulated: its own entries are
@@ -68,8 +57,6 @@ public static unsafe class Placeholders
     /// </summary>
     internal static CF_PLACEHOLDER_CREATE_INFO Describe(RemoteItem item, char* name, char* identity)
     {
-        long filetime = item.Modified.ToFileTime();
-
         var info = new CF_PLACEHOLDER_CREATE_INFO
         {
             RelativeFileName = name,
@@ -79,16 +66,35 @@ public static unsafe class Placeholders
             FileIdentityLength = (uint)(item.Id.Length * sizeof(char)),
             Flags = CF_PLACEHOLDER_CREATE_FLAGS.CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC,
         };
-
-        info.FsMetadata.FileSize = item.IsFolder ? 0 : item.Size;
-        info.FsMetadata.BasicInfo.CreationTime = filetime;
-        info.FsMetadata.BasicInfo.LastWriteTime = filetime;
-        info.FsMetadata.BasicInfo.LastAccessTime = filetime;
-        info.FsMetadata.BasicInfo.ChangeTime = filetime;
-        info.FsMetadata.BasicInfo.FileAttributes = item.IsFolder ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+        info.FsMetadata = MetadataFor(item);
         return info;
     }
 
+    /// <summary>The size and instants an entry wears on disk, from the row the portal described.</summary>
+    static CF_FS_METADATA MetadataFor(RemoteItem item)
+    {
+        var metadata = new CF_FS_METADATA { FileSize = item.IsFolder ? 0 : item.Size };
+        metadata.BasicInfo.CreationTime = FileTime(item.Created);
+        metadata.BasicInfo.LastWriteTime = FileTime(item.Modified);
+        metadata.BasicInfo.LastAccessTime = FileTime(item.Modified);
+        metadata.BasicInfo.ChangeTime = FileTime(item.Modified);
+        metadata.BasicInfo.FileAttributes = item.IsFolder ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+        return metadata;
+    }
+
+    /// <summary>
+    /// An instant Windows can hold. The portal's own instants are all well inside the range, but a
+    /// snapshot written by an older build carries none at all, and the default
+    /// <see cref="DateTimeOffset"/> predates the FILETIME epoch by more than a millennium —
+    /// <c>ToFileTime</c> throws on it rather than clamping.
+    /// </summary>
+    static long FileTime(DateTimeOffset at) =>
+        at < DateTimeOffset.UnixEpoch ? DateTimeOffset.UnixEpoch.ToFileTime() : at.ToFileTime();
+
+    /// <summary>
+    /// Creates one placeholder, or brings an existing one up to date — which is what a re-run of
+    /// the mirror, or a create racing a local save's conversion, turns creation into.
+    /// </summary>
     public static void CreateOne(string directory, RemoteItem item)
     {
         fixed (char* dir = directory)
@@ -98,8 +104,12 @@ public static unsafe class Placeholders
             var info = Describe(item, name, identity);
 
             uint processed;
-            PInvoke.CfCreatePlaceholders(dir, &info, 1,
-                CF_CREATE_FLAGS.CF_CREATE_FLAG_NONE, &processed).ThrowOnFailure();
+            // The entry's own result is read before the call's, because they are the same failure
+            // said twice: with no STOP_ON_ERROR the API answers with the first error it met and
+            // carries on, so throwing on the return value first would make the refresh below
+            // unreachable — and every re-run over an existing tree would fail every entry.
+            var called = PInvoke.CfCreatePlaceholders(dir, &info, 1,
+                CF_CREATE_FLAGS.CF_CREATE_FLAG_NONE, &processed);
 
             if (info.Result.Value == ERROR_ALREADY_EXISTS)
             {
@@ -111,6 +121,7 @@ public static unsafe class Placeholders
                 catch (COMException e) when (e.HResult == ERROR_NOT_A_CLOUD_FILE) { }
                 return;
             }
+            called.ThrowOnFailure();
             info.Result.ThrowOnFailure();
         }
     }
@@ -120,34 +131,47 @@ public static unsafe class Placeholders
     /// bytes — which is what a changed content version means: what is cached is no longer what the
     /// portal holds, and the next open should fetch rather than trust it.
     ///
-    /// A placeholder holding an unsynced local write is left alone: those bytes are the newest
-    /// anywhere, and the close-completion upload is what reconciles them.
+    /// A placeholder holding an unsynced local write is left alone and the call answers false: those
+    /// bytes are the newest anywhere, and the close-completion upload is what reconciles them. The
+    /// caller has to know, or it records a version the disk never took.
     /// </summary>
-    public static void Update(string path, RemoteItem item, bool dehydrate) =>
-        SharingRetries(() => UpdateOnce(path, item, dehydrate));
-
-    static void UpdateOnce(string path, RemoteItem item, bool dehydrate)
+    public static bool Update(string path, RemoteItem item, bool dehydrate)
     {
-        using var handle = ProtectedHandle.Open(path, exclusive: true);
-        if (ReadState(handle).DataDirty) return;
+        var applied = false;
+        SharingRetries(() => applied = UpdateOnce(path, item, dehydrate));
+        return applied;
+    }
 
-        long filetime = item.Modified.ToFileTime();
-        var metadata = new CF_FS_METADATA();
-        metadata.FileSize = item.IsFolder ? 0 : item.Size;
-        metadata.BasicInfo.CreationTime = filetime;
-        metadata.BasicInfo.LastWriteTime = filetime;
-        metadata.BasicInfo.LastAccessTime = filetime;
-        metadata.BasicInfo.ChangeTime = filetime;
-        metadata.BasicInfo.FileAttributes = item.IsFolder ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+    static bool UpdateOnce(string path, RemoteItem item, bool dehydrate)
+    {
+        // Dehydration is the one operation the platform asks for an exclusive oplock on, and does
+        // not check: "the caller must acquire an exclusive handle when specifying this flag or data
+        // corruptions can occur". Everything else here coexists with the indexer, which is what the
+        // rest of this file is built around.
+        var wants = dehydrate && !item.IsFolder
+            ? CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_EXCLUSIVE | CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_WRITE_ACCESS
+            : CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_WRITE_ACCESS;
 
+        using var handle = ProtectedHandle.Open(path, wants);
+        if (ReadState(handle).DataDirty) return false;
+
+        var metadata = MetadataFor(item);
         var flags = CF_UPDATE_FLAGS.CF_UPDATE_FLAG_MARK_IN_SYNC;
         if (dehydrate && !item.IsFolder) flags |= CF_UPDATE_FLAGS.CF_UPDATE_FLAG_DEHYDRATE;
 
+        // Not CF_UPDATE_FLAG_VERIFY_IN_SYNC, which reads like the right guard and is not. It
+        // refuses the update unless the placeholder is in sync *now* — and under TRACK_ALL a rename
+        // clears in-sync as readily as a write does, so a folder listing that renamed a file and
+        // changed its bytes in the same pass would have its dehydrate refused, leave the old bytes
+        // on disk, and then read the size disagreement as a local edit to push back. The DataDirty
+        // check above is the precise version of the same question, and it is asked under this same
+        // oplock, which is what makes it a guard rather than a guess.
         fixed (char* identity = item.Id)
         {
             PInvoke.CfUpdatePlaceholder(handle.Win32Handle, &metadata,
                 identity, (uint)(item.Id.Length * sizeof(char)),
                 null, 0, flags, null).ThrowOnFailure();
+            return true;
         }
     }
 
@@ -158,7 +182,7 @@ public static unsafe class Placeholders
     /// </summary>
     public static void Convert(string path, string id) => SharingRetries(() =>
     {
-        using var handle = ProtectedHandle.Open(path, exclusive: true);
+        using var handle = ProtectedHandle.Open(path, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_WRITE_ACCESS);
         fixed (char* identity = id)
         {
             PInvoke.CfConvertToPlaceholder(handle.Win32Handle,
@@ -170,7 +194,7 @@ public static unsafe class Placeholders
     /// <summary>What a completed upload of local bytes earns the placeholder that held them.</summary>
     public static void MarkInSync(string path) => SharingRetries(() =>
     {
-        using var handle = ProtectedHandle.Open(path, exclusive: true);
+        using var handle = ProtectedHandle.Open(path, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_WRITE_ACCESS);
         PInvoke.CfSetInSyncState(handle.Win32Handle,
             CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC,
             CF_SET_IN_SYNC_FLAGS.CF_SET_IN_SYNC_FLAG_NONE, null).ThrowOnFailure();
@@ -184,7 +208,7 @@ public static unsafe class Placeholders
     {
         try
         {
-            using var handle = ProtectedHandle.Open(path, exclusive: false);
+            using var handle = ProtectedHandle.Open(path, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_NONE);
             return ReadState(handle);
         }
         catch (COMException e) when (e.HResult == ERROR_NOT_A_CLOUD_FILE)
@@ -193,6 +217,11 @@ public static unsafe class Placeholders
         }
     }
 
+    // The identity blob the platform will carry is capped at 4KB; the fixed part of the standard
+    // info runs to 60 bytes, so this is the largest answer there can be and the query never has to
+    // be made twice.
+    const int StandardInfoBytes = 60 + 4096;
+
     static PlaceholderState ReadState(ProtectedHandle handle)
     {
         // CF_PLACEHOLDER_STANDARD_INFO, read at documented offsets rather than through the
@@ -200,15 +229,19 @@ public static unsafe class Placeholders
         // usefully: OnDiskDataSize 0, ValidatedDataSize 8, ModifiedDataSize 16, PropertiesSize 24,
         // PinState 32, InSyncState 36, FileId 40, SyncRootFileId 48, FileIdentityLength 56,
         // FileIdentity from 60 — the UTF-16 bytes CreateOne stamped.
-        var buffer = stackalloc byte[512];
+        var buffer = stackalloc byte[StandardInfoBytes];
         uint returned;
         PInvoke.CfGetPlaceholderInfo(handle.Win32Handle,
             CF_PLACEHOLDER_INFO_CLASS.CF_PLACEHOLDER_INFO_STANDARD,
-            buffer, 512, &returned).ThrowOnFailure();
+            buffer, StandardInfoBytes, &returned).ThrowOnFailure();
+        if (returned < 60) throw new InvalidDataException("The placeholder's standard info came back short.");
 
         var modified = *(long*)(buffer + 16);
         var inSync = *(int*)(buffer + 36) == (int)CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC;
-        var identityLength = *(uint*)(buffer + 56);
+        // Clamped against what was actually written rather than trusted: the length is a field
+        // inside the buffer being described, and reading past the buffer on its word is how a
+        // stack read becomes a row id sent to the portal.
+        var identityLength = Math.Min(*(uint*)(buffer + 56), returned - 60);
         var id = new string((char*)(buffer + 60), 0, (int)(identityLength / sizeof(char)));
         return new PlaceholderState(id, inSync, modified > 0);
     }
@@ -216,7 +249,12 @@ public static unsafe class Placeholders
     /// <summary>
     /// A handle from CfOpenFileWithOplock and the plain Win32 handle the query and update calls
     /// want of it. The oplock is the point: it is what keeps the entry from changing under an
-    /// update, and exclusive is what a write to it needs.
+    /// update.
+    ///
+    /// Which oplock is the caller's to say. Write access is what almost everything here wants —
+    /// the search indexer and the malware scan keep long-lived shared read handles on anything
+    /// fresh, and an exclusivity demand loses to every one of them. Dehydration is the exception,
+    /// because the platform documents exclusivity as its precondition and does not enforce it.
     /// </summary>
     sealed class ProtectedHandle : IDisposable
     {
@@ -228,20 +266,24 @@ public static unsafe class Placeholders
         Microsoft.Win32.SafeHandles.SafeFileHandle? _handle;
         public HANDLE Win32Handle { get; private set; }
 
-        public static ProtectedHandle Open(string path, bool exclusive)
+        public static ProtectedHandle Open(string path, CF_OPEN_FILE_FLAGS flags)
         {
-            // Write access rather than an exclusive oplock: the search indexer and the malware
-            // scan keep long-lived shared read handles on anything fresh, and an exclusivity
-            // demand loses to every one of them. Writing needs none of it.
-            var flags = exclusive
-                ? CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_WRITE_ACCESS
-                : CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_NONE;
             PInvoke.CfOpenFileWithOplock(path, flags, out var handle).ThrowOnFailure();
-            return new ProtectedHandle
+            var protectedHandle = new ProtectedHandle { _handle = handle };
+            try
             {
-                _handle = handle,
-                Win32Handle = PInvoke.CfGetWin32HandleFromProtectedHandle((HANDLE)handle.DangerousGetHandle()),
-            };
+                protectedHandle.Win32Handle =
+                    PInvoke.CfGetWin32HandleFromProtectedHandle((HANDLE)handle.DangerousGetHandle());
+            }
+            catch
+            {
+                // Opened but never wrapped: without this the only thing left holding it is the
+                // SafeFileHandle's finalizer, which closes the wrong thing and locks the file
+                // until the process exits.
+                protectedHandle.Dispose();
+                throw;
+            }
+            return protectedHandle;
         }
 
         public void Dispose()

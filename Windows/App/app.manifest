@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <!--
+    Two declarations, both of which the engine below depends on and neither of which .NET makes
+    for a WPF app on its own.
+
+    longPathAware, because the portal's tree has no MAX_PATH and a Windows placeholder does: a
+    client folder deep enough to run past 260 characters would fail every CfCreatePlaceholders for
+    the entries inside it, silently and forever, which is the one failure mode this port has spent
+    the most effort learning to avoid.
+
+    PerMonitorV2, because without it the process is system-DPI-aware only — the window is a blurry
+    upscale on any secondary display at a different scaling, and a screen capture of it comes back
+    as a crop of the top-left corner (see PORTING.md on the VM at 200%).
+  -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+    </windowsSettings>
+  </application>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and 11, which is where the Cloud Filter API exists at all. -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+</assembly>

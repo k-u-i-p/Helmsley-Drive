@@ -85,16 +85,23 @@ public static class OAuth
             ["client_id"] = Configuration.OAuthClientId,
         });
 
-    // The token endpoint neither takes a bearer token nor answers with a redirect, so it wants
-    // none of the API client's plumbing.
-    static readonly HttpClient Http = new();
+    // The token endpoint takes no bearer token, so it wants none of the API client's plumbing —
+    // but redirects are off here too, and for a sharper reason than over there. A 307 or 308
+    // replays the POST body verbatim, and this body carries the rotating refresh token: the
+    // credential that outlives every access token this app will ever hold. The endpoint answering
+    // with a redirect at all is a fault worth surfacing rather than following.
+    static readonly HttpClient Http = new(new SocketsHttpHandler
+    {
+        AllowAutoRedirect = false,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+    });
 
     static async Task<TokenSet> Token(Dictionary<string, string> form)
     {
         using var response = await Http.PostAsync(
             new Uri(Configuration.BaseUri, "token"),
-            new FormUrlEncodedContent(form));
-        var body = await response.Content.ReadAsStringAsync();
+            new FormUrlEncodedContent(form)).ConfigureAwait(false);
+        var body = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
             throw new OAuthException((int)response.StatusCode, body);
 
@@ -136,44 +143,66 @@ public sealed class TokenProvider
 {
     public static readonly TokenProvider Shared = new();
 
-    readonly SemaphoreSlim _gate = new(1, 1);
+    readonly SemaphoreSlim _refreshing = new(1, 1);
+
+    // Guards _cached and _generation only. Distinct from the refresh gate, which is held across a
+    // network round trip and so can never be taken by a sign-out on the way past.
+    readonly object _gate = new();
+
     TokenSet? _cached;
 
     public bool IsSignedIn => (_cached ?? TokenStore.Load()) is not null;
 
+    // Bumped by every sign-in and sign-out. A refresh in flight captures it and checks it again
+    // before caching what it was given: a sign-out that lands mid-refresh would otherwise have the
+    // refresh's own `_cached = refreshed` land after it and write the credential back to disk,
+    // leaving a signed-out process holding a live token.
+    int _generation;
+
     public void Store(TokenSet tokens)
     {
+        lock (_gate) { _generation++; _cached = tokens; }
         TokenStore.Save(tokens);
-        _cached = tokens;
     }
 
     public void SignOut()
     {
+        lock (_gate) { _generation++; _cached = null; }
         TokenStore.Clear();
-        _cached = null;
     }
 
     public async Task<string> AccessToken()
     {
-        await _gate.WaitAsync();
+        await _refreshing.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_cached is { IsAccessTokenFresh: true } cached) return cached.AccessToken;
+            int generation;
+            lock (_gate)
+            {
+                if (_cached is { IsAccessTokenFresh: true } cached) return cached.AccessToken;
+                generation = _generation;
+            }
 
             var stored = TokenStore.Load() ?? throw new NotAuthenticatedException();
             if (stored.IsAccessTokenFresh)
             {
-                _cached = stored;
+                lock (_gate) { if (_generation == generation) _cached = stored; }
                 return stored.AccessToken;
             }
 
             try
             {
                 Console.WriteLine("refreshing access token");
-                var refreshed = await OAuth.Refresh(stored.RefreshToken);
-                // Cached before the save: the old refresh token is already spent, so if the save
-                // fails this memory is the only copy of the credential there is.
-                _cached = refreshed;
+                var refreshed = await OAuth.Refresh(stored.RefreshToken).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    // Somebody signed out while this was in flight. The token is good and is
+                    // deliberately thrown away: writing it back would undo their sign-out.
+                    if (_generation != generation) throw new NotAuthenticatedException();
+                    // Cached before the save: the old refresh token is already spent, so if the
+                    // save fails this memory is the only copy of the credential there is.
+                    _cached = refreshed;
+                }
                 try { TokenStore.Save(refreshed); }
                 catch (Exception e) { Console.Error.WriteLine($"token save failed (signed in until exit): {e.Message}"); }
                 return refreshed.AccessToken;
@@ -189,7 +218,7 @@ public sealed class TokenProvider
         }
         finally
         {
-            _gate.Release();
+            _refreshing.Release();
         }
     }
 }

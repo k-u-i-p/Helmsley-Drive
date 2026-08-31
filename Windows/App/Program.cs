@@ -29,17 +29,17 @@ static class Program
             return;
         }
 
-        var root = args.FirstOrDefault(a => !a.StartsWith("--"))
+        var root = args.FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal))
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Helmsley Drive");
 
         // Named for the root it describes: two instances on two roots — the real drive and a probe —
         // must not share one memory of "what each folder held", or each mistakes the other's listings
-        // for work already done.
-        var rootKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
-            System.Text.Encoding.Unicode.GetBytes(Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)).ToUpperInvariant())))[..16];
+        // for work already done. The same fold names the sync-root registration, which is why it is
+        // asked for rather than spelled out twice.
+        var rootKey = SyncRoot.KeyFor(root);
         var snapshotPath = Path.Combine(Configuration.DataDirectory, $"snapshot-{rootKey}.json");
 
-        if (args.Contains("--unregister"))
+        if (Given(args, "--unregister"))
         {
             AttachToParentConsole();
             SyncRoot.Unregister(root);
@@ -47,7 +47,7 @@ static class Program
             return;
         }
 
-        if (args.Contains("--sign-out"))
+        if (Given(args, "--sign-out"))
         {
             AttachToParentConsole();
             TokenProvider.Shared.SignOut();
@@ -56,20 +56,27 @@ static class Program
             return;
         }
 
-        if (args.Contains("--console"))
+        var headless = Given(args, "--console");
+        if (headless) AttachToParentConsole();
+
+        // One process per root is the drive; a second would fight the first for the same sync root,
+        // the same snapshot file and the same staging path beside it — and each would read the
+        // other's mirror-driven renames as a user's, because the only thing telling the engine's own
+        // work from a stranger's is a process id. Keyed on the root rather than the app, so a probe
+        // root can still run beside the real one; taken before the --console branch, because the
+        // console host and the window on one root is exactly the collision this is for.
+        using var singleton = new Mutex(initiallyOwned: true, $@"Local\HelmsleyDrive.App.{rootKey}", out var isFirst);
+        if (!isFirst)
         {
-            AttachToParentConsole();
-            RunConsole(root, snapshotPath).GetAwaiter().GetResult();
+            if (headless) Console.Error.WriteLine($"Helmsley Drive is already running on {root}.");
+            else MessageBox.Show("Helmsley Drive is already running.", "Helmsley Drive",
+                MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        // One process is the drive; a second would fight the first for the same sync root. The
-        // second launch just says so — Explorer offers no way to front a window it cannot see.
-        using var singleton = new Mutex(initiallyOwned: true, @"Local\HelmsleyDrive.App", out var isFirst);
-        if (!isFirst)
+        if (headless)
         {
-            MessageBox.Show("Helmsley Drive is already running.", "Helmsley Drive",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            RunConsole(root, snapshotPath).GetAwaiter().GetResult();
             return;
         }
 
@@ -85,6 +92,14 @@ static class Program
         window.Closed += (_, _) => model.Shutdown();
         new Application().Run(window);
     }
+
+    /// <summary>
+    /// A flag, however it was typed. Ordinal so that no culture's collation has an opinion about
+    /// it, and case-insensitive because a flag the user got right but capitalised opening a window
+    /// instead of unregistering a sync root is not a defensible answer.
+    /// </summary>
+    static bool Given(string[] args, string flag) =>
+        args.Contains(flag, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// The snapshots describe the signed-out account's tree — every root's of them; remembering
@@ -105,7 +120,16 @@ static class Program
     static async Task RunConsole(string root, string snapshotPath)
     {
         if (!TokenProvider.Shared.IsSignedIn)
-            await SignIn.Run();
+        {
+            try { await SignIn.Run(); }
+            catch (Exception e)
+            {
+                // A refused or abandoned sign-in is an answer, not a crash: the console host has
+                // nothing to mount without one, and a stack trace says less than the sentence does.
+                Console.Error.WriteLine($"sign-in failed: {e.Message}");
+                return;
+            }
+        }
 
         // A greeting, not a gate: the portal being briefly unreachable — rate limits included — must
         // not stop the drive from mounting. Everything after this retries on its own schedule.
@@ -128,9 +152,11 @@ static class Program
         mirror.StartWatching();
         Console.WriteLine($"Connected: {root}");
 
-        // No walk of the tree: startup costs one listing (the root, which is no placeholder and so can
-        // never ask for itself), everything below fetches the first time it is looked inside, and only
-        // folders that have been looked inside are re-checked by the poll.
+        // No walk of the tree at all: the first pass has no materialised folder to keep true, the
+        // root's own listing arrives when a foreign process first opens the drive — the filter asks
+        // the populator for the root as readily as for any folder — everything below fetches the
+        // first time it is looked inside, and only folders that have been looked inside are
+        // re-checked by the poll.
         Console.WriteLine($"Ready. The tree fills in as it is browsed; browsed folders are re-checked every {Configuration.PollInterval.TotalMinutes:0} minutes. " +
             "Ctrl+C disconnects (and leaves the root registered — run with --unregister to remove it).");
 
@@ -150,6 +176,9 @@ static class Program
             catch (OperationCanceledException) { break; }
         }
 
+        // The local write path runs off the callbacks, so stopping the poll is not stopping the
+        // engine: anything still uploading has to land before the sync root goes.
+        await mirror.Quiesce(TimeSpan.FromSeconds(10));
         mirror.Dispose();
         SyncRoot.Disconnect(key);
     }
@@ -158,6 +187,10 @@ static class Program
     /// The engine narrates through <c>Console.*</c> — every hydration, upload and refusal. In a
     /// windowed process that narration has nowhere to go, so it goes to a file instead: one log
     /// per run, overwritten on the next, alongside the snapshots.
+    ///
+    /// Which is also the only account there will be of a failure on a thread nobody owns — a
+    /// filter callback, a fire-and-forget upload — so the handler that catches those is installed
+    /// here, once the log they should land in exists.
     /// </summary>
     static void RedirectConsoleToLog()
     {
@@ -166,15 +199,26 @@ static class Program
             Directory.CreateDirectory(Configuration.DataDirectory);
             var log = TextWriter.Synchronized(new StreamWriter(
                 new FileStream(Path.Combine(Configuration.DataDirectory, "app.log"),
-                    FileMode.Create, FileAccess.Write, FileShare.Read))
+                    // Not shared for reading while it is open: it holds every path in the tree and
+                    // the signed-in administrator's name, which is the firm's client list.
+                    FileMode.Create, FileAccess.Write, FileShare.None))
             { AutoFlush = true });
             Console.SetOut(log);
             Console.SetError(log);
         }
-        catch (IOException)
+        catch (Exception)
         {
-            // No log is worth refusing to run over — the lines fall silently as they would anyway.
+            // No log is worth refusing to run over — a locked profile, a read-only stale log — and
+            // the lines fall silently as they would anyway.
         }
+
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            Console.Error.WriteLine($"unhandled: {e.ExceptionObject}");
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            Console.Error.WriteLine($"unobserved: {e.Exception}");
+            e.SetObserved();
+        };
     }
 
     /// <summary>
@@ -201,6 +245,7 @@ static class Program
     const int StdErrorHandle = -12;
 
     [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
     static extern bool AttachConsole(uint processId);
 
     [DllImport("kernel32.dll")]

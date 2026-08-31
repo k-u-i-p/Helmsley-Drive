@@ -6,8 +6,13 @@ namespace HelmsleyDrive.CloudFilter;
 /// <c>Version</c> is the content hash for a file — it changes when and only when the bytes do —
 /// and empty for a folder, which has no bytes to hash; a name change is tracked as a name change,
 /// not a version change.
+///
+/// <c>Created</c> and <c>Modified</c> are kept apart because Explorer shows both and sorts on
+/// either: the portal's <c>updated_at</c> moves only on a save, so collapsing the two would date
+/// every file in the tree by its last edit and make Date Created meaningless.
 /// </summary>
-public sealed record RemoteItem(string Id, string Name, bool IsFolder, long Size, DateTimeOffset Modified, string Version);
+public sealed record RemoteItem(
+    string Id, string Name, bool IsFolder, long Size, DateTimeOffset Created, DateTimeOffset Modified, string Version);
 
 /// <summary>
 /// The slice of the portal the engine needs, a port of Mac/Shared/HelmsleyAPI.swift — list a
@@ -18,8 +23,13 @@ public interface IRemoteStore
     /// <param name="folderId">A row id, or null for the root of the tree.</param>
     Task<IReadOnlyList<RemoteItem>> List(string? folderId);
 
-    /// <summary>Whole-file fetch. Ranged requests can come later; hydration hands us the range.</summary>
-    Task<byte[]> Fetch(string fileId);
+    /// <summary>
+    /// The file's bytes, as a stream the caller owns and disposes. A stream rather than an array
+    /// because the portal's ceiling is 500MB a file: hydration copies it through in chunks, and
+    /// each chunk handed to the filter is also what resets the platform's sixty-second patience
+    /// with a callback that has not answered yet.
+    /// </summary>
+    Task<Stream> Fetch(string fileId);
 
     /// <summary>Files a new file into a folder, and answers the row it landed on.</summary>
     Task<RemoteItem> Upload(string? folderId, string filename, string localPath);
@@ -42,12 +52,36 @@ public interface IRemoteStore
     /// <summary>Into the portal's bin. Recoverable there, which is why every local delete maps to it.</summary>
     Task Trash(string id);
 
-    /// <summary>Out of the bin, into the named folder — or back where it was, for null.</summary>
+    /// <summary>
+    /// Out of the bin and into the named folder — null being the root of the tree, as it is
+    /// everywhere else on this interface, not "wherever it came from".
+    /// </summary>
     Task<string> Restore(string id, string? folderId);
+
+    /// <summary>
+    /// Out of the bin and back where it was. Distinct from <see cref="Restore"/> because the portal
+    /// reads the presence of a destination as "the caller said where this should land": an undelete
+    /// means put it back, and restoring to the top of the tree is a different sentence that must
+    /// not be spelled the same way.
+    /// </summary>
+    Task<string> RestoreWhereItWas(string id);
 
     /// <summary>
     /// The distinction the engine acts on: gone means the item no longer exists to be written to,
     /// so stop holding the local side back for it; everything else is transient and worth a retry.
     /// </summary>
     bool IsNotFound(Exception error);
+}
+
+/// <summary>
+/// Every listing the engine acts on crosses the seam through here.
+///
+/// A name from the portal is not yet a filename — <see cref="LocalNames"/> says why — and a
+/// listing that skips this step becomes a silent gap in the tree. Putting it on the seam rather
+/// than at each call site is what stops the next caller forgetting.
+/// </summary>
+public static class RemoteStoreExtensions
+{
+    public static async Task<IReadOnlyList<RemoteItem>> ListLocally(this IRemoteStore store, string? folderId) =>
+        LocalNames.Legalise(await store.List(folderId).ConfigureAwait(false));
 }

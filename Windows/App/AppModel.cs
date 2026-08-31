@@ -63,7 +63,12 @@ public sealed class AppModel : INotifyPropertyChanged
         // Off the dispatcher before blocking on it — StopEngine awaits the poll loop, and awaiting
         // anything from a blocked UI thread whose context the await wants back is the deadlock
         // everyone gets to write once.
-        Task.Run(StopEngine).Wait(TimeSpan.FromSeconds(15));
+        //
+        // And nothing thrown here may escape: this runs from the window's Closed handler, where an
+        // exception is not a failed shutdown but a crash dialog on the way out — with the console
+        // already redirected to a file nobody is watching.
+        try { Task.Run(StopEngine).Wait(TimeSpan.FromSeconds(15)); }
+        catch (Exception e) { Console.Error.WriteLine($"shutdown was not clean: {e.Message}"); }
     }
 
     // MARK: - Actions
@@ -90,7 +95,12 @@ public sealed class AppModel : INotifyPropertyChanged
         await Task.Run(async () =>
         {
             await StopEngine();
-            SyncRoot.Unregister(_root);
+            // Best-effort, and deliberately not allowed to fail the sign-out. A root already
+            // unregistered from a console throws here, and letting that through used to skip
+            // everything below — leaving the credential on disk under a window still saying
+            // "Signed in", which on a shared machine is the one outcome this button must not have.
+            try { SyncRoot.Unregister(_root); }
+            catch (Exception e) { Console.Error.WriteLine($"unregister failed: {e.Message}"); }
         });
         IsMounted = false;
         Changed();
@@ -119,7 +129,7 @@ public sealed class AppModel : INotifyPropertyChanged
 
     async Task MountAndRun()
     {
-        if (IsMounted) return;
+        if (IsMounted || _connection is not null) return;
 
         await Task.Run(() =>
         {
@@ -160,6 +170,20 @@ public sealed class AppModel : INotifyPropertyChanged
                 // the window was still showing.
                 if (ErrorMessage is not null) { ErrorMessage = null; Changed(); }
             }
+            catch (NotAuthenticatedException)
+            {
+                // The grant is dead and the store is already cleared. Left in the general branch
+                // this looked like a portal hiccup and the loop went on forever: the window kept
+                // saying "signed in" and "mounted" off a stale Admin, while every listing and every
+                // hydration failed, and only a restart got the user back.
+                Console.Error.WriteLine("the portal ended this session; unmounting and asking for a sign-in");
+                Admin = null;
+                ErrorMessage = "Signing in again is needed — the portal ended this session.";
+                await StopEngine();
+                IsMounted = false;
+                Changed();
+                return;
+            }
             catch (Exception e)
             {
                 // A failed pass changes nothing on disk; the next one starts from the same snapshot.
@@ -176,8 +200,19 @@ public sealed class AppModel : INotifyPropertyChanged
     async Task StopEngine()
     {
         _polling?.Cancel();
-        if (_loop is not null) await _loop; // never faults: Poll catches everything, cancellation included
-        _mirror?.Dispose();
+        // Poll catches everything including cancellation, so this only faults if StopEngine itself
+        // was re-entered — which the null-out below makes a no-op rather than a fault.
+        if (_loop is not null && _loop != Task.CompletedTask) await _loop;
+
+        if (_mirror is { } mirror)
+        {
+            // Before the disconnect, and before the credential goes: an upload still running here
+            // would otherwise finish against a disconnected sync root and write a snapshot for the
+            // account that has just signed out — which the next sign-in then diffs against a tree
+            // that was never theirs.
+            await mirror.Quiesce(TimeSpan.FromSeconds(10));
+            mirror.Dispose();
+        }
         if (_connection is not null) SyncRoot.Disconnect(_connection);
         _polling = null;
         _loop = null;

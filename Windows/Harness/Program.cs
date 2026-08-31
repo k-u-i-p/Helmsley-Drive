@@ -51,8 +51,13 @@ try
     Check("it was the looking that fetched the listings",
         portal.Log.Contains("list /") && portal.Log.Contains($"list {docs}"));
 
+    var listedOnce = portal.Log.Count;
     await mirror.SyncPass();
-    Check("a second pass over an unchanged tree is a no-op that succeeds", true);
+    Check("a second pass re-lists what is materialised and changes nothing",
+        portal.Log.Count > listedOnce
+        && portal.Log.Skip(listedOnce).All(entry => entry.StartsWith("list "))
+        && File.Exists(Path.Combine(root, "Docs", "a.txt"))
+        && File.Exists(Path.Combine(root, "b.txt")));
 
     Check("hydration serves the fake bytes through FETCH_DATA",
         TryRead(Path.Combine(root, "Docs", "a.txt")) == "the first version of a");
@@ -122,8 +127,44 @@ try
         File.Exists(Path.Combine(root, "Docs", "precious.txt")) && !portal.IsTrashed(refused));
     portal.RefuseWrites = false;
 
+    // MARK: Names, identity and cold starts
+
+    portal.AddFile(docs, "Quote A*.txt", "the first");
+    portal.AddFile(docs, "Quote A?.txt", "the second");
     await mirror.SyncPass();
-    Check("a closing pass still agrees with itself", portal.Log.Count >= 0);
+    Check("two portal names that collapse to one legal name yield one entry, not a flicker",
+        File.Exists(Path.Combine(root, "Docs", "Quote A_.txt"))
+        && Directory.GetFiles(Path.Combine(root, "Docs"), "Quote A*.txt").Length == 1);
+
+    // A folder the portal has only declared — no row of its own — that something is finally filed
+    // into. Its id changes under a name that does not, and the entry Explorer is holding has to go
+    // on resolving: the filter has already marked the directory fully populated and will never
+    // offer to list it again, so the snapshot has to follow the identity rather than be dropped.
+    var declared = portal.AddFolder(null, "Compliance");
+    await mirror.SyncPass();
+    Look(Path.Combine(root, "Compliance"));
+    var written = portal.Materialise(declared);
+    portal.AddFile(written, "filed at last.txt", "the first thing in it");
+    await mirror.SyncPass();
+    Check("a declared folder that materialises keeps its contents coming",
+        File.Exists(Path.Combine(root, "Compliance", "filed at last.txt")));
+
+    // A snapshot that does not survive to the next run — a sign-out that left the tree, an
+    // unreadable file — must not freeze a tree the filter considers fully populated. Nothing can
+    // recover what was *removed* while no snapshot existed; what must not happen is the pass
+    // deciding it has nothing to walk and never looking again.
+    await mirror.Quiesce(TimeSpan.FromSeconds(5));
+    mirror.Dispose();
+    SyncRoot.Disconnect(key);
+    File.Delete(snapshotPath);
+
+    portal.AddFile(null, "after the cold start.txt", "arrived while nothing was running");
+    mirror = new Mirror(portal, root, snapshotPath);
+    key = SyncRoot.Connect(root, portal, mirror);
+    mirror.StartWatching();
+    await mirror.SyncPass();
+    Check("a lost snapshot re-mirrors what is on disk rather than freezing it",
+        File.Exists(Path.Combine(root, "after the cold start.txt")));
 }
 finally
 {
@@ -138,6 +179,7 @@ Console.WriteLine(failures == 0 ? "ALL PASSED" : $"{failures} FAILED");
 Console.WriteLine("portal saw: " + string.Join(", ", portal.Log));
 return failures;
 
+// Declared before the try so the cold-start section can replace them mid-run.
 void Check(string what, bool ok)
 {
     if (!ok) failures++;
@@ -211,8 +253,17 @@ sealed class FakePortal : IRemoteStore
     readonly object _lock = new();
     int _serial;
 
-    public List<string> Log { get; } = new();
-    public bool RefuseWrites { get; set; }
+    readonly List<string> _log = new();
+
+    /// <summary>
+    /// What the portal was asked for, safe to read from the test while a filter thread is still
+    /// appending: population runs on the filter's own threads, and enumerating a List while
+    /// another thread adds to it is a spurious failure in an otherwise green suite.
+    /// </summary>
+    public IReadOnlyList<string> Log { get { lock (_lock) return _log.ToArray(); } }
+
+    volatile bool _refuseWrites;
+    public bool RefuseWrites { get => _refuseWrites; set => _refuseWrites = value; }
 
     sealed class NotFoundException : Exception;
     sealed class RefusedException() : Exception("the portal said no");
@@ -238,6 +289,23 @@ sealed class FakePortal : IRemoteStore
     }
 
     public void RenameRemotely(string id, string name) { lock (_lock) _nodes[id].Name = name; }
+
+    /// <summary>
+    /// The portal writing a folder it had only declared: the same folder under the same name, but
+    /// a real row id where there was a minted reference. Its children come with it.
+    /// </summary>
+    public string Materialise(string id)
+    {
+        lock (_lock)
+        {
+            var was = _nodes[id];
+            var now = $"n{++_serial}";
+            _nodes[now] = new Node { Id = now, ParentId = was.ParentId, Name = was.Name, IsFolder = true };
+            foreach (var child in _nodes.Values.Where(n => n.ParentId == id).ToList()) child.ParentId = now;
+            _nodes.Remove(id);
+            return now;
+        }
+    }
     public void Remove(string id) { lock (_lock) _nodes.Remove(id); }
 
     public string? FindByName(string name)
@@ -256,19 +324,19 @@ sealed class FakePortal : IRemoteStore
     {
         lock (_lock)
         {
-            Log.Add($"list {folderId ?? "/"}");
+            _log.Add($"list {folderId ?? "/"}");
             return Task.FromResult<IReadOnlyList<RemoteItem>>(
                 _nodes.Values.Where(n => n.ParentId == folderId && !n.Trashed).Select(Item).ToList());
         }
     }
 
-    public Task<byte[]> Fetch(string fileId)
+    public Task<Stream> Fetch(string fileId)
     {
         lock (_lock)
         {
             return _nodes.TryGetValue(fileId, out var node)
-                ? Task.FromResult(node.Content)
-                : Task.FromException<byte[]>(new NotFoundException());
+                ? Task.FromResult<Stream>(new MemoryStream(node.Content, writable: false))
+                : Task.FromException<Stream>(new NotFoundException());
         }
     }
 
@@ -339,14 +407,27 @@ sealed class FakePortal : IRemoteStore
         }
     }
 
+    /// <summary>Into the folder named — null being the root, which is a destination like any other.</summary>
     public Task<string> Restore(string id, string? folderId)
     {
         lock (_lock)
         {
-            Refusable($"restore {id}");
+            Refusable($"restore {id} -> {folderId ?? "/"}");
             var node = _nodes.TryGetValue(id, out var n) ? n : throw new NotFoundException();
             node.Trashed = false;
-            if (folderId is not null) node.ParentId = folderId;
+            node.ParentId = folderId;
+            return Task.FromResult(node.Name);
+        }
+    }
+
+    /// <summary>Back where it was, which is the portal's answer to being told no destination at all.</summary>
+    public Task<string> RestoreWhereItWas(string id)
+    {
+        lock (_lock)
+        {
+            Refusable($"restore {id} in place");
+            var node = _nodes.TryGetValue(id, out var n) ? n : throw new NotFoundException();
+            node.Trashed = false;
             return Task.FromResult(node.Name);
         }
     }
@@ -355,12 +436,13 @@ sealed class FakePortal : IRemoteStore
 
     void Refusable(string entry)
     {
-        Log.Add(entry);
-        if (RefuseWrites) throw new RefusedException();
+        _log.Add(entry);
+        if (_refuseWrites) throw new RefusedException();
     }
 
+    static readonly DateTimeOffset Stamp = new(2026, 8, 28, 12, 0, 0, TimeSpan.Zero);
+
     static RemoteItem Item(Node node) =>
-        new(node.Id, node.Name, node.IsFolder, node.Content.LongLength,
-            new DateTimeOffset(2026, 8, 28, 12, 0, 0, TimeSpan.Zero),
+        new(node.Id, node.Name, node.IsFolder, node.Content.LongLength, Stamp, Stamp,
             node.IsFolder ? "" : $"r{node.Revision}");
 }

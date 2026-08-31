@@ -1,5 +1,3 @@
-CfGetPlatformInfo
-CfRegisterSyncRoot
 CfUnregisterSyncRoot
 CfConnectSyncRoot
 CfDisconnectSyncRoot

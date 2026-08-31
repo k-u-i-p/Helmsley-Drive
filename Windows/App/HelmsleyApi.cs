@@ -17,7 +17,12 @@ namespace HelmsleyDrive.App;
 public static class Timestamp
 {
     public static DateTimeOffset? Date(string? value) =>
-        DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var date)
+        // AssumeUniversal, because RoundtripKind does nothing for a string carrying neither a Z nor
+        // an offset and the fallback is local time — which would date every row by the reader's
+        // timezone rather than the writer's.
+        DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture,
+            DateTimeStyles.RoundtripKind | DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+            out var date)
             ? date
             : null;
 }
@@ -46,8 +51,10 @@ public sealed class Permissions
     };
 
     /// <summary>
-    /// Part of an item's metadata version, so a folder that becomes read-only under somebody is
-    /// re-reported rather than left offering writes it no longer has.
+    /// What the Mac folds into an item's metadata version, so a folder that becomes read-only
+    /// under somebody is re-reported rather than left offering writes it no longer has. Nothing
+    /// here reads it yet: a Windows placeholder carries no permission state and its version is the
+    /// content hash alone, so a permission change does not propagate. Kept for when it does.
     /// </summary>
     [JsonIgnore]
     public string Signature =>
@@ -149,7 +156,15 @@ public sealed class ApiException(int status, string message) : Exception(
     public int Status { get; } = status;
 
     public static ApiException Malformed => new(0, "");
-    public static ApiException UploadRejected(int status) => new(status, $"Cloud Storage refused the upload (HTTP {status}).");
+
+    /// <summary>
+    /// The bucket refused the bytes. Deliberately carries no status: <see cref="IsNotFound"/> is a
+    /// statement about the *portal's* row, and Cloud Storage answering 404 for a signed URL says
+    /// nothing about whether that row exists. Conflating the two had a refused PUT read as "the row
+    /// is gone" and mint a second row for a file that already had one — the fork this client exists
+    /// to prevent.
+    /// </summary>
+    public static ApiException UploadRejected(int status) => new(0, $"Cloud Storage refused the upload (HTTP {status}).");
 
     /// <summary>
     /// The distinction the engine acts on: gone means remove the item, everything else means
@@ -195,9 +210,9 @@ public readonly struct Destination
 // MARK: - Client
 
 /// <summary>
-/// Everything this app asks of the portal — the port of Mac/Shared/HelmsleyAPI.swift. The engine's
-/// two calls reach it through <see cref="HelmsleyRemoteStore"/>; the writes sit here ready for the
-/// close/rename/delete callbacks to arrive.
+/// Everything this app asks of the portal — the port of Mac/Shared/HelmsleyAPI.swift. It reaches
+/// the engine through <see cref="HelmsleyRemoteStore"/>: the reads for population and hydration,
+/// and the writes for the close, rename and delete callbacks <c>LocalChanges</c> maps onto them.
 ///
 /// Two load-bearing properties, easy to lose in translation:
 /// <list type="bullet">
@@ -216,7 +231,18 @@ public sealed class HelmsleyApi
     // Everything hangs off api/files.
     static readonly Uri Base = new(Configuration.BaseUri, "api/files/");
 
-    static readonly HttpClient Http = new(new HttpClientHandler { AllowAutoRedirect = false });
+    // No total-elapsed timeout: HttpClient's default hundred seconds covers the body as well as
+    // the handshake, which against a 500MB file limit is a cap on how large a file may be opened at
+    // all rather than a guard against a stall. A connection that stops delivering is what the OS
+    // times out. PooledConnectionLifetime is for the other end of the same run: this process is
+    // meant to stay up for days, and a pooled connection would otherwise go on resolving to an
+    // address the portal has moved off.
+    static readonly HttpClient Http = new(new SocketsHttpHandler
+    {
+        AllowAutoRedirect = false,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+    })
+    { Timeout = Timeout.InfiniteTimeSpan };
 
     // MARK: Reads
 
@@ -229,28 +255,66 @@ public sealed class HelmsleyApi
     /// only one that says where the item sits and whether it is in the bin.
     /// </summary>
     public async Task<RemoteFile> Item(string id) =>
-        (await Get<ItemWrapper>(ItemPath(id))).Item;
+        (await Get<ItemWrapper>(ItemPath(id)).ConfigureAwait(false)).Item;
 
     /// <summary>
     /// What the bin holds — the top of each thing thrown away, not everything marked: a directory
-    /// takes its contents with it.
+    /// takes its contents with it. Ported ahead of a caller: Windows has no view of the bin yet,
+    /// so a deleted item is recoverable only from the portal.
     /// </summary>
     public async Task<IReadOnlyList<RemoteFile>> Trashed() =>
-        (await Get<ItemsWrapper>("trash")).Items;
+        (await Get<ItemsWrapper>("trash").ConfigureAwait(false)).Items;
 
     public async Task<Admin> Whoami() =>
-        (await Get<AdminWrapper>("whoami")).Admin;
+        (await Get<AdminWrapper>("whoami").ConfigureAwait(false)).Admin;
 
     /// <summary>
     /// A file's bytes. The request is answered with a redirect into Cloud Storage, so the transfer
     /// is between this machine and the bucket; the portal never sees the bytes at all.
     /// </summary>
-    public async Task<byte[]> DownloadContents(string id)
+    public async Task<Stream> DownloadContents(string id)
     {
-        using var response = await Follow(() => Authorised(HttpMethod.Get, DocumentPath(id) + "/content"));
-        if (!response.IsSuccessStatusCode)
-            throw new ApiException((int)response.StatusCode, $"Could not download file {id}.");
-        return await response.Content.ReadAsByteArrayAsync();
+        var response = await Follow(() => Authorised(HttpMethod.Get, DocumentPath(id) + "/content")).ConfigureAwait(false);
+        try
+        {
+            if (!response.IsSuccessStatusCode)
+                throw new ApiException((int)response.StatusCode, $"Could not download file {id}.");
+            return new Body(response, await response.Content.ReadAsStreamAsync().ConfigureAwait(false));
+        }
+        catch
+        {
+            response.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// The bytes as they arrive, holding the response open until the reader is done — the port of
+    /// the Mac's download-to-a-temporary-file, for the same reason it exists there: files run to
+    /// hundreds of megabytes and buffering one whole on a filter callback thread is a large-object
+    /// allocation per open.
+    /// </summary>
+    sealed class Body(HttpResponseMessage response, Stream body) : Stream
+    {
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+        public override int Read(byte[] buffer, int offset, int count) => body.Read(buffer, offset, count);
+        public override int Read(Span<byte> buffer) => body.Read(buffer);
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancel = default) =>
+            body.ReadAsync(buffer, cancel);
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) { body.Dispose(); response.Dispose(); }
+            base.Dispose(disposing);
+        }
     }
 
     // MARK: Writes
@@ -261,7 +325,7 @@ public sealed class HelmsleyApi
     /// </summary>
     public async Task<RemoteFile> Upload(Destination destination, string filename, string? mime, string filePath)
     {
-        var uploadId = await Stage(destination.Body(), mime, filePath);
+        var uploadId = await Stage(destination.Body(), mime, filePath).ConfigureAwait(false);
         return await Row("finalise", destination.Body(new() { ["uploadId"] = uploadId, ["filename"] = filename }));
     }
 
@@ -272,7 +336,7 @@ public sealed class HelmsleyApi
     /// </summary>
     public async Task<RemoteFile> ReplaceContents(string id, string? mime, string filePath)
     {
-        var uploadId = await Stage(new() { ["replaces"] = id }, mime, filePath);
+        var uploadId = await Stage(new() { ["replaces"] = id }, mime, filePath).ConfigureAwait(false);
         return await Row(DocumentPath(id) + "/content", new() { ["uploadId"] = uploadId });
     }
 
@@ -295,7 +359,7 @@ public sealed class HelmsleyApi
         // Null rather than a missing key, so the body says outright that this transfer declares no
         // content type. Either way the portal falls back to octet-stream.
         target["contentType"] = mime;
-        var ticket = await Post<Ticket>("upload-ticket", target);
+        var ticket = await Post<Ticket>("upload-ticket", target).ConfigureAwait(false);
 
         await using var stream = File.OpenRead(filePath);
         using var request = new HttpRequestMessage(HttpMethod.Put, ticket.UploadUrl);
@@ -303,10 +367,13 @@ public sealed class HelmsleyApi
         // Both headers were signed into the URL, so they must be sent back exactly: Cloud Storage
         // recomputes the signature over them and refuses the PUT if either differs. No
         // Authorization header of ours goes to the bucket — the signature is the whole credential.
-        request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(ticket.ContentType);
+        // Added rather than parsed: MediaTypeHeaderValue re-serialises what it reads — spacing,
+        // quoting, parameter order — and Cloud Storage recomputes the signature over the exact
+        // bytes. It also throws outright on the empty string a ticket may legitimately carry.
+        request.Content.Headers.TryAddWithoutValidation("Content-Type", ticket.ContentType);
         request.Headers.TryAddWithoutValidation("x-goog-content-length-range", $"0,{ticket.MaxBytes}");
 
-        using var response = await Http.SendAsync(request);
+        using var response = await Http.SendAsync(request).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode) throw ApiException.UploadRejected((int)response.StatusCode);
         return ticket.UploadId;
     }
@@ -316,9 +383,13 @@ public sealed class HelmsleyApi
     /// write, so it describes the file as it now stands rather than as the request left it.
     /// </summary>
     async Task<RemoteFile> Row(string path, Dictionary<string, object?> body) =>
-        (await Post<FileWrapper>(path, body)).File;
+        (await Post<FileWrapper>(path, body).ConfigureAwait(false)).File;
 
-    /// <summary>The permanent delete.</summary>
+    /// <summary>
+    /// The permanent delete. Ported for completeness and deliberately unreachable from the engine:
+    /// every local delete maps to the bin instead, Shift+Delete included, because nothing local
+    /// should be able to destroy the only copy of the bytes.
+    /// </summary>
     public Task Delete(string id) => SendExpectingNothing(HttpMethod.Delete, DocumentPath(id), null);
 
     // MARK: Structure
@@ -329,21 +400,21 @@ public sealed class HelmsleyApi
     /// that comes back, not the one that was asked for.
     /// </summary>
     public async Task<RemoteFolder> CreateFolder(Destination destination, string name) =>
-        (await Post<FolderWrapper>("folders", destination.Body(new() { ["name"] = name }))).Folder;
+        (await Post<FolderWrapper>("folders", destination.Body(new() { ["name"] = name })).ConfigureAwait(false)).Folder;
 
     /// <summary>
     /// Renames one item, and answers the name it now has. Unlike a move, a taken name is refused
     /// rather than numbered: a rename is someone typing a name they mean.
     /// </summary>
     public async Task<string> Rename(string id, string name) =>
-        (await Post<Named>(ItemPath(id, "rename"), new() { ["name"] = name })).Name;
+        (await Post<Named>(ItemPath(id, "rename"), new() { ["name"] = name }).ConfigureAwait(false)).Name;
 
     /// <summary>
     /// Moves one item into <paramref name="destination"/>, and answers the name it landed under —
     /// not always the name it left with, since a collision in the target is numbered.
     /// </summary>
     public async Task<string> Move(string id, Destination destination) =>
-        (await Post<Named>(ItemPath(id, "move"), destination.Body())).Name;
+        (await Post<Named>(ItemPath(id, "move"), destination.Body()).ConfigureAwait(false)).Name;
 
     /// <summary>
     /// Into the bin. The bytes stay and the row keeps the folder it was in, which is what makes
@@ -357,7 +428,7 @@ public sealed class HelmsleyApi
     /// in use, so something else may have taken it in the meantime.
     /// </summary>
     public async Task<string> Restore(string id, Destination? destination) =>
-        (await Post<Named>(ItemPath(id, "restore"), destination?.Body() ?? new())).Name;
+        (await Post<Named>(ItemPath(id, "restore"), destination?.Body() ?? new()).ConfigureAwait(false)).Name;
 
     // MARK: Plumbing
 
@@ -383,14 +454,14 @@ public sealed class HelmsleyApi
     static string ItemPath(string id) => "items/" + Uri.EscapeDataString(id);
     static string ItemPath(string id, string action) => ItemPath(id) + "/" + action;
 
-    async Task<T> Get<T>(string path) => await Send<T>(HttpMethod.Get, path, null);
+    async Task<T> Get<T>(string path) => await Send<T>(HttpMethod.Get, path, null).ConfigureAwait(false);
 
-    async Task<T> Post<T>(string path, Dictionary<string, object?> body) => await Send<T>(HttpMethod.Post, path, body);
+    async Task<T> Post<T>(string path, Dictionary<string, object?> body) => await Send<T>(HttpMethod.Post, path, body).ConfigureAwait(false);
 
     async Task<T> Send<T>(HttpMethod method, string path, Dictionary<string, object?>? body)
     {
-        using var response = await Follow(() => Authorised(method, path, body));
-        var data = await response.Content.ReadAsByteArrayAsync();
+        using var response = await Follow(() => Authorised(method, path, body)).ConfigureAwait(false);
+        var data = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
         ThrowOnFailure(method, path, response, data);
         try
         {
@@ -404,8 +475,8 @@ public sealed class HelmsleyApi
 
     async Task SendExpectingNothing(HttpMethod method, string path, Dictionary<string, object?>? body)
     {
-        using var response = await Follow(() => Authorised(method, path, body));
-        ThrowOnFailure(method, path, response, await response.Content.ReadAsByteArrayAsync());
+        using var response = await Follow(() => Authorised(method, path, body)).ConfigureAwait(false);
+        ThrowOnFailure(method, path, response, await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
     }
 
     static void ThrowOnFailure(HttpMethod method, string path, HttpResponseMessage response, byte[] data)
@@ -420,7 +491,7 @@ public sealed class HelmsleyApi
     async Task<HttpRequestMessage> Authorised(HttpMethod method, string path, Dictionary<string, object?>? body = null)
     {
         var request = new HttpRequestMessage(method, new Uri(Base, path));
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await TokenProvider.Shared.AccessToken());
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await TokenProvider.Shared.AccessToken().ConfigureAwait(false));
         if (body is not null)
             request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
         return request;
@@ -433,33 +504,58 @@ public sealed class HelmsleyApi
     /// credential the bucket wants anyway. Origin is scheme as well as host, case-insensitively:
     /// an https → http redirect back to the portal would otherwise put the token on the wire.
     /// </summary>
+    const int MaxHops = 5;
+
     static async Task<HttpResponseMessage> Follow(Func<Task<HttpRequestMessage>> make)
     {
-        using var first = await make();
+        using var first = await make().ConfigureAwait(false);
         var origin = first.RequestUri!;
-        var response = await Http.SendAsync(first, HttpCompletionOption.ResponseHeadersRead);
+        HttpResponseMessage? response =
+            await Http.SendAsync(first, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
 
-        for (var hop = 0; hop < 5; hop++)
+        try
         {
-            if (response.StatusCode is not (>= (HttpStatusCode)300 and < (HttpStatusCode)400)) return response;
-            var location = response.Headers.Location
-                ?? throw new ApiException((int)response.StatusCode, "The server redirected without saying where.");
-            var target = location.IsAbsoluteUri ? location : new Uri(response.RequestMessage!.RequestUri!, location);
-            response.Dispose();
+            for (var hop = 0; ; hop++)
+            {
+                // Tested before the count, so the hop that finally answers is the answer rather
+                // than one redirect too many.
+                if (response.StatusCode is not (>= (HttpStatusCode)300 and < (HttpStatusCode)400)) return response;
+                if (hop == MaxHops) throw new ApiException(0, "Too many redirects.");
 
-            var sameOrigin = string.Equals(target.Host, origin.Host, StringComparison.OrdinalIgnoreCase)
-                && string.Equals(target.Scheme, origin.Scheme, StringComparison.OrdinalIgnoreCase);
-            using var next = new HttpRequestMessage(HttpMethod.Get, target);
-            if (sameOrigin)
-                next.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await TokenProvider.Shared.AccessToken());
-            else
-                // Logged because it is a security property nobody can otherwise observe: without
-                // this line there is no way to tell a stripped redirect from one that quietly
-                // carried the token on.
-                Console.WriteLine($"redirect to {target.Host} — Authorization stripped");
-            response = await Http.SendAsync(next, HttpCompletionOption.ResponseHeadersRead);
+                var location = response.Headers.Location
+                    ?? throw new ApiException((int)response.StatusCode, "The server redirected without saying where.");
+                var target = location.IsAbsoluteUri ? location : new Uri(response.RequestMessage!.RequestUri!, location);
+                if (target.Scheme != Uri.UriSchemeHttps)
+                    throw new ApiException(0, $"The server redirected to an insecure address ({target.Scheme}).");
+
+                response.Dispose();
+                response = null;
+
+                // Origin is scheme, host *and* port: a service sharing the portal's hostname on
+                // another port is as much a different party as one on another name, and it is the
+                // bearer token that would be handed to it.
+                var sameOrigin = string.Equals(target.Host, origin.Host, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(target.Scheme, origin.Scheme, StringComparison.OrdinalIgnoreCase)
+                    && target.Port == origin.Port;
+                using var next = new HttpRequestMessage(HttpMethod.Get, target);
+                if (sameOrigin)
+                    next.Headers.Authorization =
+                        new AuthenticationHeaderValue("Bearer", await TokenProvider.Shared.AccessToken().ConfigureAwait(false));
+                else
+                    // Logged because it is a security property nobody can otherwise observe: without
+                    // this line there is no way to tell a stripped redirect from one that quietly
+                    // carried the token on.
+                    Console.WriteLine($"redirect to {target.Host} — Authorization stripped");
+                response = await Http.SendAsync(next, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+            }
         }
-        throw new ApiException(0, "Too many redirects.");
+        catch
+        {
+            // A response left undisposed on the way out is a pooled connection held open for as
+            // long as it takes the GC to notice — and every download that fails this way costs one.
+            response?.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
