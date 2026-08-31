@@ -17,6 +17,7 @@ CloudFilter/            the engine, as a library
   Mirror.cs             both directions — the sync pass down, the local writes up
   SnapshotStore.cs      what each folder held last time, which is what "changed" is diffed against
   LocalNames.cs         portal names Windows will not hold, and will not treat as paths
+  LocalTree.cs          taking the tree away on sign-out, and what must not go with it
   RemoteStore.cs        the slice of the portal the engine needs, answered by App/HelmsleyRemoteStore.cs
   NativeMethods.txt     the cldapi surface; CsWin32 generates the bindings at build time
 App/                    the windowed host — sign in, mount, and the engine in-process; tray app later
@@ -51,8 +52,13 @@ per run.
 registers and tears down — the real filter on the near side of the seam, which is where PORTING.md
 says the surprises live. It prints one line per check and `ALL PASSED` or a count.
 
-Three flags for development, all console-facing: `--console` runs the old headless host (the right
-shape over SSH, where a window has no desktop), `--unregister` removes the sync-root registration,
-and `--sign-out` clears the credential and the snapshots. One process per root: the window and
-`--console` on the same root would fight over the sync root and the snapshot, and the second one
-launched says so instead.
+Three flags for development, all console-facing. `--console` runs the old headless host (the right
+shape over SSH, where a window has no desktop). `--unregister` removes the sync-root registration
+and leaves the folder and its files alone. `--sign-out` is the whole sign-out the window's button
+does: it clears the credential and the snapshots, unregisters, and deletes the mirrored tree —
+keeping back anything the portal never took, at `<root> (not uploaded)`, and saying where.
+
+One process per root, and every one of those flags takes that lock before it touches anything: the
+window and `--console` on one root would fight over the sync root and the snapshot, and
+`--sign-out` under a running drive would have that drive bin the portal's whole tree. The second
+one launched says so instead.

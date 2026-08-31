@@ -111,14 +111,35 @@ The alternative — a loopback listener on `http://127.0.0.1:<port>/` — would 
 `redirect_uri` on the portal's allowlist. **Ask Ben before touching the portal.** Its repository is
 a separate checkout at `../Helmsley`.
 
-**What a sign-out leaves behind.** `--sign-out` and the window's Sign Out clear the credential and
-the snapshots and leave the tree on disk, where the Mac removes the domain and with it the replica.
-The pass now re-mirrors that tree rather than freezing on it, but two things still follow from
-leaving it: a row removed while nothing was running is never noticed, because the snapshot that
-would have known about it is gone; and the placeholders are left dehydrated under a registration
-that may go away, which Microsoft's own guidance says to undo with `CfRevertPlaceholder` first.
-Whether sign-out should delete the tree, revert it, or go on leaving it is Ben's call, not the
-porting agent's.
+**What a sign-out leaves behind.** Decided (Ben, 2026-08-31): it deletes the tree, which is what
+the Mac's domain removal amounts to. `LocalTree` does it and `AppModel.Disconnect` and
+`Program.SignOut` both run the same sequence, in an order that is the whole of why it is safe:
+
+1. Stop the poll and drain what the engine still has in flight — but stay connected.
+2. Ask `LocalTree.LocalOnly` what the portal does not hold. This is the step with the order in it:
+   telling a hydrated placeholder from an ordinary file is a question only the filter can answer,
+   and it will not answer it once there is nobody behind the sync root — `CfOpenFileWithOplock`
+   fails a cloud file with `ERROR_CLOUD_FILE_ACCESS_DENIED` (0x8007018B) the moment the provider
+   disconnects. Registered is not enough; connected is the requirement, and the harness is what
+   established that.
+3. Disconnect, then unregister.
+4. `LocalTree.Discard`: set those files aside, then remove the tree.
+
+Asked with nothing connected — `--sign-out` from a console, where this process never mounted
+anything — it falls back to `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`, which is on-disk state and so
+still legible: a dehydrated placeholder's bytes are in the bucket and nowhere else, so it goes.
+Everything else is kept, because from there a hydrated file and a save that never went up look the
+same.
+
+Nothing that exists only here is deleted. A create whose upload never landed, or a save still
+waiting to go up, is moved to `<root> (not uploaded)` and the user is told where — the engine's
+standing rule is that nothing local may destroy the only copy of any bytes, which is why a delete
+maps to the portal's bin and Shift+Delete does too, and a sign-out is not the place to make an
+exception to it.
+
+Both sign-out paths take the singleton mutex first. `--sign-out` deleting the tree under a running
+drive would have that drive's engine read every delete as a stranger's and bin the entire document
+tree on the portal, which is the worst thing in this codebase that a single missing lock could do.
 
 **Push.** The Mac registers with APNs for `.fileProvider` pushes and drops its poll to 15 minutes.
 None of that exists here. Polling only is the right first cut; whether Windows gets WNS at all is a

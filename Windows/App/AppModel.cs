@@ -88,19 +88,40 @@ public sealed class AppModel : INotifyPropertyChanged
     /// </summary>
     public Task Mount() => Perform(MountAndRun);
 
+    /// <summary>
+    /// Sign Out and Unmount, which now means all of it: the engine, the registration, the tree, the
+    /// credential and the snapshots. Leaving the tree behind was the older behaviour and it left
+    /// dehydrated placeholders standing under a registration that had gone — entries the user can
+    /// see and cannot open, and a tree the next account's first pass would meet as if it were
+    /// theirs.
+    /// </summary>
     public Task Disconnect() => Perform(async () =>
     {
         // The engine first: a mounted drive whose credential has been cleared could not answer a
         // single request, so nothing of it may survive the sign-out.
-        await Task.Run(async () =>
+        var keptAt = await Task.Run(async () =>
         {
+            // Stop the poll and drain what is still in flight, but stay connected for one more
+            // moment: which of these files the portal already holds is a question only the filter
+            // can answer, and it will not answer it for a cloud file whose provider has gone. So
+            // the tree is read while there is still somebody behind the sync root, and only then
+            // torn down.
+            _polling?.Cancel();
+            if (_loop is not null) await _loop;
+            if (_mirror is { } running) await running.Quiesce(TimeSpan.FromSeconds(10));
+
+            var keep = LocalTree.LocalOnly(_root);
+
             await StopEngine();
+
             // Best-effort, and deliberately not allowed to fail the sign-out. A root already
             // unregistered from a console throws here, and letting that through used to skip
             // everything below — leaving the credential on disk under a window still saying
             // "Signed in", which on a shared machine is the one outcome this button must not have.
             try { SyncRoot.Unregister(_root); }
             catch (Exception e) { Console.Error.WriteLine($"unregister failed: {e.Message}"); }
+
+            return LocalTree.Discard(_root, keep);
         });
         IsMounted = false;
         Changed();
@@ -108,6 +129,8 @@ public sealed class AppModel : INotifyPropertyChanged
         TokenProvider.Shared.SignOut();
         Program.DeleteSnapshots();
         Admin = null;
+        if (keptAt is not null)
+            ErrorMessage = $"Signed out. Files the portal had not taken yet were kept at {keptAt}.";
     });
 
     // MARK: - The engine

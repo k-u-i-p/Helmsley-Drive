@@ -39,9 +39,32 @@ static class Program
         var rootKey = SyncRoot.KeyFor(root);
         var snapshotPath = Path.Combine(Configuration.DataDirectory, $"snapshot-{rootKey}.json");
 
+        var headless = Given(args, "--console");
+        var maintenance = Given(args, "--unregister") || Given(args, "--sign-out");
+        if (headless || maintenance) AttachToParentConsole();
+
+        // One process per root is the drive; a second would fight the first for the same sync root,
+        // the same snapshot file and the same staging path beside it — and each would read the
+        // other's mirror-driven renames as a user's, because the only thing telling the engine's own
+        // work from a stranger's is a process id. Keyed on the root rather than the app, so a probe
+        // root can still run beside the real one.
+        //
+        // Taken before every branch that touches the root, the maintenance flags included. It is
+        // what stops --sign-out deleting the tree under a running drive, whose engine would see a
+        // stranger's process id on each delete and dutifully bin the whole document tree on the
+        // portal.
+        using var singleton = new Mutex(initiallyOwned: true, $@"Local\HelmsleyDrive.App.{rootKey}", out var isFirst);
+        if (!isFirst)
+        {
+            var busy = $"Helmsley Drive is already running on {root}.";
+            if (headless || maintenance) Console.Error.WriteLine(busy + " Close it first.");
+            else MessageBox.Show("Helmsley Drive is already running.", "Helmsley Drive",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
         if (Given(args, "--unregister"))
         {
-            AttachToParentConsole();
             SyncRoot.Unregister(root);
             Console.WriteLine($"Unregistered sync root at {root}. The folder and its files remain.");
             return;
@@ -49,28 +72,7 @@ static class Program
 
         if (Given(args, "--sign-out"))
         {
-            AttachToParentConsole();
-            TokenProvider.Shared.SignOut();
-            DeleteSnapshots();
-            Console.WriteLine("Signed out. The next run will ask again.");
-            return;
-        }
-
-        var headless = Given(args, "--console");
-        if (headless) AttachToParentConsole();
-
-        // One process per root is the drive; a second would fight the first for the same sync root,
-        // the same snapshot file and the same staging path beside it — and each would read the
-        // other's mirror-driven renames as a user's, because the only thing telling the engine's own
-        // work from a stranger's is a process id. Keyed on the root rather than the app, so a probe
-        // root can still run beside the real one; taken before the --console branch, because the
-        // console host and the window on one root is exactly the collision this is for.
-        using var singleton = new Mutex(initiallyOwned: true, $@"Local\HelmsleyDrive.App.{rootKey}", out var isFirst);
-        if (!isFirst)
-        {
-            if (headless) Console.Error.WriteLine($"Helmsley Drive is already running on {root}.");
-            else MessageBox.Show("Helmsley Drive is already running.", "Helmsley Drive",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            SignOut(root);
             return;
         }
 
@@ -100,6 +102,27 @@ static class Program
     /// </summary>
     static bool Given(string[] args, string flag) =>
         args.Contains(flag, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The whole of a sign-out: the tree, the registration, the credential and the snapshots. The
+    /// same sequence <see cref="AppModel.Disconnect"/> runs, and in the same order, because the
+    /// order is what makes it safe — what only exists locally is identified while the filter can
+    /// still be asked, and nothing is deleted until the registration that would route those
+    /// deletes back into the engine has gone.
+    /// </summary>
+    internal static void SignOut(string root)
+    {
+        var keep = LocalTree.LocalOnly(root);
+        try { SyncRoot.Unregister(root); }
+        catch (Exception e) { Console.Error.WriteLine($"unregister failed: {e.Message}"); }
+        var keptAt = LocalTree.Discard(root, keep);
+
+        TokenProvider.Shared.SignOut();
+        DeleteSnapshots();
+
+        Console.WriteLine("Signed out. The sync root is unregistered and its tree removed."
+            + (keptAt is null ? "" : $" Files the portal had not taken yet are at {keptAt}."));
+    }
 
     /// <summary>
     /// The snapshots describe the signed-out account's tree — every root's of them; remembering

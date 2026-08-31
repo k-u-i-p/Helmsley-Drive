@@ -19,6 +19,7 @@ if (Directory.Exists(root))
     try { SyncRoot.Unregister(root); } catch { }
     Directory.Delete(root, recursive: true);
 }
+if (Directory.Exists(LocalTree.KeptAsideFrom(root))) Directory.Delete(LocalTree.KeptAsideFrom(root), recursive: true);
 File.Delete(snapshotPath);
 
 var portal = new FakePortal();
@@ -32,6 +33,10 @@ SyncRoot.Register(root);
 var mirror = new Mirror(portal, root, snapshotPath);
 var key = SyncRoot.Connect(root, portal, mirror);
 mirror.StartWatching();
+
+// The sign-out section tears both down early, so the teardown has to be told what is left.
+var connected = true;
+var registered = true;
 
 try
 {
@@ -165,13 +170,42 @@ try
     await mirror.SyncPass();
     Check("a lost snapshot re-mirrors what is on disk rather than freezing it",
         File.Exists(Path.Combine(root, "after the cold start.txt")));
+
+    // MARK: What a sign-out takes away, and what it must not
+
+    // Stopped but still connected, which is the state a sign-out reads the tree in.
+    await mirror.Quiesce(TimeSpan.FromSeconds(5));
+
+    // Written with the mirror stopped, so nothing uploads it: this is what a local create whose
+    // upload never landed looks like on disk — bytes with no row anywhere.
+    File.WriteAllText(Path.Combine(root, "never uploaded.txt"), "bytes the portal never saw");
+
+    // The order a sign-out runs in, and the reason it runs in that order. The tree is classified
+    // while a provider is still behind the sync root, because a cloud file will not answer for
+    // itself once there is nobody there; and nothing is removed until the registration that would
+    // route those deletes back into the engine has gone.
+    var keep = LocalTree.LocalOnly(root);
+
+    mirror.Dispose();
+    SyncRoot.Disconnect(key);
+    connected = false;
+    SyncRoot.Unregister(root);
+    registered = false;
+    var keptAt = LocalTree.Discard(root, keep);
+
+    Check("a sign-out takes the mirrored tree away", !Directory.Exists(root));
+    Check("and keeps back what the portal never took, and only that",
+        keptAt is not null
+        && File.Exists(Path.Combine(keptAt, "never uploaded.txt"))
+        && !File.Exists(Path.Combine(keptAt, "b.txt"))
+        && !Directory.Exists(Path.Combine(keptAt, "Docs")));
 }
 finally
 {
-    mirror.Dispose();
-    SyncRoot.Disconnect(key);
-    SyncRoot.Unregister(root);
-    Directory.Delete(root, recursive: true);
+    if (connected) { mirror.Dispose(); SyncRoot.Disconnect(key); }
+    if (registered) SyncRoot.Unregister(root);
+    if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+    if (Directory.Exists(LocalTree.KeptAsideFrom(root))) Directory.Delete(LocalTree.KeptAsideFrom(root), recursive: true);
     File.Delete(snapshotPath);
 }
 
