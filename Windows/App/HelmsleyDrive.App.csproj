@@ -18,6 +18,13 @@
          falls back to the running exe's when Window.Icon is unset — the window's title bar. Cut
          from the same master as the Mac and iOS app icons by Mac/Tools/generate-icon.py. -->
     <ApplicationIcon>HelmsleyDrive.ico</ApplicationIcon>
+    <!-- What the exe's properties dialog shows, what the installer stamps on its uninstall entry,
+         and what a tester reads back when reporting a fault. Overridden on the command line by
+         Packaging/package.ps1, so a test build can be identified without a commit. -->
+    <Version>0.1.0</Version>
+    <Product>Helmsley Drive</Product>
+    <Company>Helmsley</Company>
+    <Copyright>Copyright © Helmsley</Copyright>
   </PropertyGroup>
   <ItemGroup>
     <!-- The desktop SDK drops these from the implicit set; the App sources were written against
@@ -38,7 +45,12 @@
     <!-- The same icon again, this time as a file beside the executable, because the sync-root
          registration hands the shell a path for it to draw from rather than anything in-process
          (SyncRoot.Icon). ApplicationIcon alone only embeds it. -->
-    <Content Include="HelmsleyDrive.ico" CopyToOutputDirectory="PreserveNewest" />
+    <!-- ExcludeFromSingleFile, or the published build has no icon in the navigation pane at all:
+         a single-file publish bundles content into the executable, where a path handed to the
+         shell cannot reach it, and Icon() would fall through to the stock glyph on every machine
+         that installed the app rather than built it. -->
+    <Content Include="HelmsleyDrive.ico" CopyToOutputDirectory="PreserveNewest"
+             ExcludeFromSingleFile="true" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\CloudFilter\HelmsleyDrive.CloudFilter.csproj" />

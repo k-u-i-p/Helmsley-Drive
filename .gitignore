@@ -19,3 +19,7 @@ build/
 bin/
 obj/
 .vs/
+
+# The installers package.ps1 builds. Signed or not, they are output — a tester gets one from a
+# release, never from a checkout.
+dist/

@@ -71,8 +71,20 @@ static class Program
 
         if (Given(args, "--unregister"))
         {
-            SyncRoot.Unregister(root);
-            Console.WriteLine($"Unregistered sync root at {root}. The folder and its files remain.");
+            // Caught rather than left to fall out of Main: an uninstaller is what runs this, and an
+            // unhandled exception in a WinExe is a Windows crash dialog raised at somebody in the
+            // middle of removing the app — over a registration that, either way, is being thrown
+            // away with the rest of it.
+            try
+            {
+                Console.WriteLine(SyncRoot.Unregister(root)
+                    ? $"Unregistered sync root at {root}. The folder and its files remain."
+                    : $"No sync root registered at {root}. Nothing to unregister.");
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine($"unregister failed: {e.Message}");
+            }
             return;
         }
 

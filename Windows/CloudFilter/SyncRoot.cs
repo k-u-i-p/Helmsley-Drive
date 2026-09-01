@@ -5,6 +5,7 @@ using Windows.Security.Cryptography;
 using Windows.Storage;
 using Windows.Storage.Provider;
 using Windows.Win32;
+using Windows.Win32.Foundation;
 using Windows.Win32.Storage.CloudFilters;
 
 namespace HelmsleyDrive.CloudFilter;
@@ -131,9 +132,30 @@ public static unsafe class SyncRoot
         }
     }
 
-    public static void Unregister(string path)
+    const int FileNotFound = unchecked((int)0x80070002);        // ERROR_FILE_NOT_FOUND
+    const int PathNotFound = unchecked((int)0x80070003);        // ERROR_PATH_NOT_FOUND
+    const int NotUnderSyncRoot = unchecked((int)0x80070186);    // ERROR_CLOUD_FILE_NOT_UNDER_SYNC_ROOT
+
+    /// <summary>
+    /// The filter's three ways of saying there was nothing here: the folder is gone, its parent is
+    /// gone, or it is a plain folder no sync root has ever covered. Unregistering a path twice —
+    /// an uninstaller after the sign-out that already did it — lands on one of these, and none of
+    /// them is a fault to be thrown at whoever asked.
+    /// </summary>
+    static bool NothingRegistered(HRESULT hr) =>
+        hr.Value is FileNotFound or PathNotFound or NotUnderSyncRoot;
+
+    /// <summary>
+    /// Takes the registration away, and answers whether there was one to take. False is not a
+    /// failure: it is the path saying it was never a sync root, which is the ordinary state of
+    /// affairs for an uninstaller, for a second <c>--unregister</c>, and for a sign-out that ran
+    /// after the drive had already let the root go. Only a refusal the filter cannot account for
+    /// throws.
+    /// </summary>
+    public static bool Unregister(string path)
     {
         var unregistered = false;
+        string? refusal = null;
         try
         {
             StorageProviderSyncRootManager.Unregister(SyncRootId(path));
@@ -141,12 +163,30 @@ public static unsafe class SyncRoot
         }
         catch (Exception e) when (e is COMException or ArgumentException or UnauthorizedAccessException)
         {
-            Console.Error.WriteLine($"shell unregistration refused ({e.Message}); trying the filter's own");
+            // Held rather than said at once. On a path carrying no registration this is simply
+            // what the shell manager says, and an uninstaller must not narrate it as a fault; it
+            // is worth a line only once the filter below has shown there was something here.
+            refusal = e.Message;
         }
-        // An older build registered with the filter alone; if that is what this path carries,
-        // take it away too. Harmless when the shell unregistration above already did the work.
+
+        // An older build registered with the filter alone; if that is what this path carries, take
+        // it away too. Harmless when the shell unregistration above already did the work — and it
+        // is the authority on the question this method answers, because the filter is what knows
+        // whether a path is under a sync root at all.
         var legacy = PInvoke.CfUnregisterSyncRoot(path);
-        if (!unregistered) legacy.ThrowOnFailure();
+        if (unregistered || legacy.Succeeded)
+        {
+            if (refusal is not null)
+                Console.Error.WriteLine($"shell unregistration refused ({refusal}); the filter's own took it away");
+            return true;
+        }
+        if (NothingRegistered(legacy)) return false;
+
+        // Something was here and neither way could remove it. The shell's account of why comes
+        // first: the HRESULT thrown next says what the filter made of it, and not what refused.
+        if (refusal is not null) Console.Error.WriteLine($"shell unregistration refused ({refusal})");
+        legacy.ThrowOnFailure();
+        return false; // ThrowOnFailure has thrown; the compiler cannot see that.
     }
 
     // Every live connection's delegates, kept reachable for exactly as long as the connection is.

@@ -68,8 +68,11 @@ says the surprises live. It prints one line per check and `ALL PASSED` or a coun
 
 Four flags. `--background` is the only one meant for daily use — the login start above.
 The other three are console-facing and for development. `--console` runs the old headless host (the right
-shape over SSH, where a window has no desktop). `--unregister` removes the sync-root registration
-and leaves the folder and its files alone. `--sign-out` is the whole sign-out the window's button
+shape over SSH, where a window has no desktop). `--unregister` removes the sync-root registration.
+The folder and its subfolders stay; the file placeholders under them do not, because Windows drops
+the entries it can no longer fetch for, and on a tree nobody has opened that is every file in it.
+Nothing is lost that the portal does not still hold — but it is emptier afterwards than "removes
+the registration" sounds. `--sign-out` is the whole sign-out the window's button
 does: it clears the credential and the snapshots, unregisters, and deletes the mirrored tree —
 keeping back anything the portal never took, at `<root> (not uploaded)`, and saying where.
 
@@ -78,3 +81,33 @@ window and `--console` on one root would fight over the sync root and the snapsh
 `--sign-out` under a running drive would have that drive bin the portal's whole tree. The second
 one launched says so instead.
 
+## Packaging for testers
+
+`Packaging/package.ps1` takes a checkout to an installer:
+
+```
+.\Packaging\package.ps1 -Version 0.2.0 -Runtime win-x64, win-arm64
+```
+
+It publishes through `App/Properties/PublishProfiles/`, then compiles `Packaging/HelmsleyDrive.iss`
+with Inno Setup 6.3 or later, leaving `dist\HelmsleyDrive-<version>-<arch>.exe`. Pass
+`-CertThumbprint` to sign the executable and the installer with a certificate from the current
+user's store; pass `-SkipInstaller` to publish and stop.
+
+The published app is self-contained and single-file — around 260 MB, because a tester who has to
+find and install the .NET 8 *Desktop* Runtime before anything starts is a tester who writes to ask
+why nothing started. Beside it goes `HelmsleyDrive.ico`, which the sync-root registration hands the
+shell as a path; it is excluded from the bundle for exactly that reason.
+
+The install is per user throughout, and needs no administrator: into `%LOCALAPPDATA%\Programs`,
+with the URI scheme in HKCU and a Startup shortcut that passes `--background`. That shortcut is not
+a nicety — the drive answers Explorer only while the process runs, so without it the first reboot
+leaves a registered root of placeholders that never hydrate. Uninstalling runs `--unregister` before the files go, and
+leaves both `%USERPROFILE%\Helmsley Drive` and the log
+directory in place — with the caveat above about what unregistering takes out of that folder.
+
+Two things the installer cannot do for you. It is unsigned unless you pass a certificate, so every
+tester meets SmartScreen once and has to choose *More info* → *Run anyway*. And `longPathAware` in
+the manifest only takes effect where the machine-wide `LongPathsEnabled` policy is on, which is an
+administrator's setting on a machine this installer deliberately never elevates on — worth checking
+against a real client tree before deciding it does not matter.
