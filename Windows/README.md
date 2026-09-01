@@ -96,7 +96,7 @@ one launched says so instead.
 `Packaging/package.ps1` takes a checkout to an installer:
 
 ```
-.\Packaging\package.ps1 -Version 0.2.0 -Runtime win-x64, win-arm64
+.\Packaging\package.ps1 -Version 0.3.0 -Runtime win-x64, win-arm64
 ```
 
 It publishes through `App/Properties/PublishProfiles/`, then compiles `Packaging/HelmsleyDrive.iss`
@@ -134,18 +134,34 @@ Then, in an SSH session held open for the duration — Windows kills SSH child p
 disconnect, and two self-contained publishes are minutes, not seconds:
 
 ```
+ssh helmsley-vm 'cd C:\Users\Ben\Helmsley-Drive\Windows; dotnet build'
 ssh helmsley-vm 'cd C:\Users\Ben\Helmsley-Drive\Windows; dotnet run --project Harness'
-ssh helmsley-vm 'cd C:\Users\Ben\Helmsley-Drive\Windows; .\Packaging\package.ps1 -Version 0.3.0 -Runtime win-x64, win-arm64'
 ```
 
-The harness first, always: it is the only thing that drives the real filter, and a packaged
-installer is an expensive way to discover the engine is broken. Both installers land in `dist\` at
-the repo root — gitignored, because a tester gets one from a release and never from a checkout —
-and come back with:
+Build and harness first, always: the harness is the only thing that drives the real filter, and a
+packaged installer is an expensive way to discover the engine is broken. Then the packaging, which
+needs two things said exactly right:
+
+```
+ssh helmsley-vm 'powershell -NoProfile -ExecutionPolicy Bypass -Command "& C:\Users\Ben\Helmsley-Drive\Windows\Packaging\package.ps1 -Version 0.3.0 -Runtime win-x64,win-arm64"'
+```
+
+The VM refuses to run an unsigned `.ps1` — calling the script directly fails with "running scripts
+is disabled on this system". `-ExecutionPolicy Bypass` on the one invocation is the answer; it
+lasts for that process and changes nothing about the machine, which is the point. And it has to be
+`-Command`, not `-File`: under `-File` the runtime list arrives as the single string
+`win-x64,win-arm64` and `ValidateSet` rejects it against a set it visibly belongs to, which is a
+confusing way to spend ten minutes.
+
+Both installers land in `dist\` at the repo root — gitignored, because a tester gets one from a
+release and never from a checkout — and come back with:
 
 ```
 scp 'helmsley-vm:C:/Users/Ben/Helmsley-Drive/dist/HelmsleyDrive-0.3.0-*.exe' Windows/dist/
 ```
+
+Worth a `shasum -a 256` against the VM's `Get-FileHash` afterwards; a truncated 260 MB copy looks
+exactly like a whole one in a directory listing.
 
 Give every build handed to anybody a distinct `-Version`. Three different 0.1.0s in the wild make a
 bug report against "0.1.0" a bug report about nothing. Nothing in the repository pins the number —
