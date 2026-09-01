@@ -63,7 +63,7 @@ public static class Configuration
     /// </summary>
     public static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(1);
 
-    /// <summary>The interval as a sentence says it — "minute" or "5 minutes" — for the window and the console.</summary>
+    /// <summary>The interval as a sentence says it — "a minute" or "5 minutes" — for the window and the console.</summary>
     public static string PollIntervalInWords =>
-        PollInterval.TotalMinutes == 1 ? "minute" : $"{PollInterval.TotalMinutes:0} minutes";
+        PollInterval.TotalMinutes == 1 ? "a minute" : $"{PollInterval.TotalMinutes:0} minutes";
 }
