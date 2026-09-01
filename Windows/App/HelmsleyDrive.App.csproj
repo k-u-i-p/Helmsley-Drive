@@ -5,18 +5,40 @@
          flags attach to the parent's console when there is one. -->
     <OutputType>WinExe</OutputType>
     <UseWPF>true</UseWPF>
+    <!-- For the tray icon and its menu only (TrayIcon.cs). WPF has never had a NotifyIcon, and
+         WinForms' is the one every WPF app in the world borrows. -->
+    <UseWindowsForms>true</UseWindowsForms>
     <TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>
     <RootNamespace>HelmsleyDrive.App</RootNamespace>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- longPathAware and PerMonitorV2; see the manifest for why each is load-bearing. -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- The executable's icon, which is also Explorer's, the taskbar's, Alt-Tab's and — since WPF
+         falls back to the running exe's when Window.Icon is unset — the window's title bar. Cut
+         from the same master as the Mac and iOS app icons by Mac/Tools/generate-icon.py. -->
+    <ApplicationIcon>HelmsleyDrive.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <!-- The desktop SDK drops these from the implicit set; the App sources were written against
          the plain SDK's, where both are standard. -->
     <Using Include="System.IO" />
     <Using Include="System.Net.Http" />
+    <!-- And the two UseWindowsForms adds, taken straight back out. Globally, System.Windows.Forms
+         beside System.Windows makes Application, MessageBox, Button, HorizontalAlignment and half
+         a dozen more ambiguous in every file that draws the window. TrayIcon.cs asks for them by
+         alias instead, which is the only place either belongs. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- The tile as a plain image, compiled in: the window's header draws it the way the Mac
+         window draws the app icon, and a pack URI is the only way to read one at run time. -->
+    <Resource Include="AppMark.png" />
+    <!-- The same icon again, this time as a file beside the executable, because the sync-root
+         registration hands the shell a path for it to draw from rather than anything in-process
+         (SyncRoot.Icon). ApplicationIcon alone only embeds it. -->
+    <Content Include="HelmsleyDrive.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\CloudFilter\HelmsleyDrive.CloudFilter.csproj" />
@@ -24,5 +46,9 @@
   <ItemGroup>
     <!-- DPAPI, which seals the token set to the signed-in Windows user (TokenStore.cs). -->
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <!-- The sign-in sheet (SignInWindow.cs). Only the SDK is a dependency; the runtime it drives is
+         the evergreen Edge WebView2 that ships with Windows 11, and where it is missing SignIn falls
+         back to the default browser rather than asking anyone to install anything. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
   </ItemGroup>
 </Project>

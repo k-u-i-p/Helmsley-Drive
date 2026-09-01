@@ -111,6 +111,28 @@ The alternative — a loopback listener on `http://127.0.0.1:<port>/` — would 
 `redirect_uri` on the portal's allowlist. **Ask Ben before touching the portal.** Its repository is
 a separate checkout at `../Helmsley`.
 
+**Where the sign-in happens.** Decided (Ben, 2026-09-01): in a sheet the app owns
+(`SignInWindow.cs`), not the default browser. The redirect above is unchanged and the portal is
+untouched; what changed is who renders the portal's pages. The default browser could not be made to
+finish tidily — handed a redirect to a scheme it does not speak it launches the OS handler and
+leaves the document where it was, so the consent page stayed on screen after a successful sign-in,
+and no page or process can close a tab the user navigated to. A WebView2 sheet is
+`ASWebAuthenticationSession`'s arrangement ported rather than argued with: it cancels the navigation
+to `helmsley-drive:` in `NavigationStarting`, reads the code off the URL, and closes itself.
+
+The browser path is kept whole underneath it, because two callers still need it — `--console`, which
+has no desktop to open a sheet on, and any machine without a WebView2 runtime, where `SignIn` falls
+back rather than asking anyone to install something. Which is why the HKCU registration is still
+rewritten on every sign-in even when the sheet is going to handle it.
+
+Two consequences worth holding on to. The sheet keeps its own cookie jar under
+`%LOCALAPPDATA%\Helmsley Drive\SignInBrowser`, named explicitly because WebView2's default is
+beside the executable and Program Files is not writable; `SignIn.ForgetBrowserSession` deletes it on
+sign-out, since a portal session outliving the credential would sign the next person in as the last
+one. And WebView2 will not start in a non-interactive window station — an SSH session is one — so a
+sheet driven over SSH fails with `ERROR_INVALID_WINDOW_HANDLE` (0x80070578) and anything testing it
+has to run on the VM's own desktop, `schtasks /IT` being the way to put it there.
+
 **What a sign-out leaves behind.** Decided (Ben, 2026-08-31): it deletes the tree, which is what
 the Mac's domain removal amounts to. `LocalTree` does it and `AppModel.Disconnect` and
 `Program.SignOut` both run the same sequence, in an order that is the whole of why it is safe:

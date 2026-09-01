@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 
 namespace HelmsleyDrive.App;
 
@@ -9,10 +10,23 @@ namespace HelmsleyDrive.App;
 /// two things this app is for — a credential and a mounted drive — are currently true, with the
 /// one button that fixes whichever is not. Built in code rather than XAML so the whole app stays
 /// one greppable language; redrawn wholesale from the model, which for six controls costs nothing.
+///
+/// It no longer starts the engine on Loaded, and it no longer stops it on Closed. Both moved to
+/// Program, because with the tray this window may never be shown at all — a login start comes up
+/// straight into the notification area — and a drive that only mounts once somebody has looked at
+/// the window would be a drive that never mounts.
 /// </summary>
 public sealed class MainWindow : Window
 {
     readonly AppModel _model;
+
+    /// <summary>
+    /// Set by Quit on the way out, and read by the tray's Closing handler, which cancels every
+    /// close but this one. A flag rather than a check of the shutdown mode: whether WPF honours a
+    /// cancelled Closing during Application.Shutdown is a detail to know rather than to depend on,
+    /// and the tray is the only thing that ever sets it.
+    /// </summary>
+    public bool IsQuitting { get; set; }
 
     readonly TextBlock _signedInAs = new() { FontSize = 14 };
     readonly TextBlock _email = new() { FontSize = 11 };
@@ -51,7 +65,6 @@ public sealed class MainWindow : Window
         // InvokeAsync, never Invoke: the poll loop raises changes from the thread pool, and a
         // blocking marshal from there can meet a dispatcher that is itself blocked in Shutdown.
         model.PropertyChanged += (_, _) => Dispatcher.InvokeAsync(Render);
-        Loaded += async (_, _) => await model.Startup();
 
         _signInButton.Click += async (_, _) => await model.Connect();
         _mountButton.Click += async (_, _) => await model.Mount();
@@ -93,18 +106,24 @@ public sealed class MainWindow : Window
         return layout;
     }
 
-    /// <summary>The mark and the sentence — a stock cloud glyph until the app has an icon of its own.</summary>
+    /// <summary>
+    /// The mark and the sentence. The mark is the app's own icon rather than a stand-in glyph, for
+    /// the reason the Mac window draws its icon too: this window is the one place a person confirms
+    /// they are looking at the real Helmsley app before typing a password into the sheet it opens.
+    /// </summary>
     UIElement Header()
     {
-        var glyph = new TextBlock
+        var glyph = new Image
         {
-            Text = "\uE753", // Cloud
-            FontFamily = new FontFamily("Segoe Fluent Icons, Segoe MDL2 Assets"),
-            FontSize = 38,
-            Foreground = new SolidColorBrush(Color.FromRgb(0x00, 0x67, 0xC0)),
+            Source = new BitmapImage(new Uri("pack://application:,,,/AppMark.png")),
+            Width = 48,
+            Height = 48,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 14, 0),
         };
+        // The asset is 256 square and lands here at a fifth of that. The default scaling mode is
+        // the cheap one, and it tells on a gradient this large.
+        RenderOptions.SetBitmapScalingMode(glyph, BitmapScalingMode.HighQuality);
         var titles = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         titles.Children.Add(new TextBlock { Text = "Helmsley Drive", FontSize = 19, FontWeight = FontWeights.SemiBold });
         titles.Children.Add(new TextBlock
@@ -161,7 +180,7 @@ public sealed class MainWindow : Window
         });
         _disconnected.Children.Add(new TextBlock
         {
-            Text = "Your browser will open to the portal's sign-in page. You will be asked for your password and the code texted to you, exactly as on the portal.",
+            Text = "A Helmsley sign-in window will open. You will be asked for your password and the code texted to you, exactly as on the portal; the window closes itself when it is done.",
             FontSize = 11,
             TextWrapping = TextWrapping.Wrap,
             Foreground = Tertiary,

@@ -42,17 +42,32 @@ dotnet run --project Harness
 ```
 
 The app is a small status window like the Mac one — no console. With a credential stored it mounts
-on its own; without one it waits on its Sign In button, which is what opens the browser. Either way
+on its own; without one it waits on its Sign In button, which opens the portal's pages in a sign-in
+sheet the app owns and closes itself on the redirect (`SignInWindow.cs`; the default browser is the
+fallback, and what `--console` uses). Either way
 it registers `%USERPROFILE%\Helmsley Drive` as a sync root and mirrors the portal's tree for as long
-as the window is open; there is no extension process on Windows, so closing the window is what stops
-the drive answering. The engine's narration goes to `%LOCALAPPDATA%\Helmsley Drive\app.log`, one log
-per run.
+as the app is running. The engine's narration goes to `%LOCALAPPDATA%\Helmsley Drive\app.log`, one
+log per run.
+
+Closing the window does not stop it. There is no extension process on Windows — the engine is in
+this process — so the window closes to a notification-area icon and only Quit, from that icon's
+menu, stops the drive answering. The icon carries the mount state in its tooltip and opens the
+window again on a click; a second launch of the app, which is what the Start Menu shortcut is once
+the window is away, asks the running instance for its window rather than announcing that it is
+already running. `--background` starts straight into the tray without showing the window at all,
+which is what the installer's Startup shortcut passes.
+
+Windows 11 puts a tray icon it has not seen before into the hidden-icon overflow behind the
+chevron, and there is no supported way for an app to promote itself out of it. The first close
+therefore raises a notification saying where the app has gone; dragging the icon out of the
+overflow, once, is the user's own move to make.
 
 `dotnet run --project Harness` is the engine driven against a fake portal on a scratch root it
 registers and tears down — the real filter on the near side of the seam, which is where PORTING.md
 says the surprises live. It prints one line per check and `ALL PASSED` or a count.
 
-Three flags for development, all console-facing. `--console` runs the old headless host (the right
+Four flags. `--background` is the only one meant for daily use — the login start above.
+The other three are console-facing and for development. `--console` runs the old headless host (the right
 shape over SSH, where a window has no desktop). `--unregister` removes the sync-root registration
 and leaves the folder and its files alone. `--sign-out` is the whole sign-out the window's button
 does: it clears the credential and the snapshots, unregisters, and deletes the mirrored tree —
@@ -62,3 +77,4 @@ One process per root, and every one of those flags takes that lock before it tou
 window and `--console` on one root would fight over the sync root and the snapshot, and
 `--sign-out` under a running drive would have that drive bin the portal's whole tree. The second
 one launched says so instead.
+

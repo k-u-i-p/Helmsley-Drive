@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Windows;
 using HelmsleyDrive.CloudFilter;
 
 namespace HelmsleyDrive.App;
@@ -73,10 +74,13 @@ public sealed class AppModel : INotifyPropertyChanged
 
     // MARK: - Actions
 
-    /// <summary>The Sign In and Mount button: the browser round trip, then the same mount as startup.</summary>
+    /// <summary>The Sign In and Mount button: the sign-in sheet, then the same mount as startup.</summary>
     public Task Connect() => Perform(async () =>
     {
-        await SignIn.Run();
+        // The window is what the sheet hangs off, and asking the Application for it rather than
+        // holding one keeps this model free of the view. Null under --console, which is the case
+        // that has no desktop to open a sheet on anyway and takes the browser instead.
+        await SignIn.Run(Application.Current?.MainWindow);
         await Greet();
         await MountAndRun();
     });
@@ -128,6 +132,7 @@ public sealed class AppModel : INotifyPropertyChanged
 
         TokenProvider.Shared.SignOut();
         Program.DeleteSnapshots();
+        SignIn.ForgetBrowserSession();
         Admin = null;
         if (keptAt is not null)
             ErrorMessage = $"Signed out. Files the portal had not taken yet were kept at {keptAt}.";

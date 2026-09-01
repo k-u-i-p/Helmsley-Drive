@@ -27,15 +27,29 @@ public static class Configuration
     public const string OAuthScope = "drive";
 
     /// <summary>
-    /// The same custom scheme the Mac uses, already on the portal's allowlist. Windows honours it
-    /// through <c>HKCU\Software\Classes\helmsley-drive</c>; the browser launches a second instance
-    /// of this app with the callback URL, which relays it to the one that is waiting.
+    /// The same custom scheme the Mac uses, already on the portal's allowlist. It is never followed
+    /// in the ordinary case: the sign-in sheet cancels the navigation and reads the code off the URL,
+    /// exactly as <c>ASWebAuthenticationSession</c> does. The scheme is still registered under
+    /// <c>HKCU\Software\Classes\helmsley-drive</c> for the browser fallback, where following it
+    /// launches a second instance of this app that relays the URL to the one that is waiting.
     /// </summary>
     public const string OAuthRedirectUri = "helmsley-drive://oauth/callback";
 
-    /// <summary>Where this app keeps what it must keep — the token set and the mirror's snapshots.</summary>
+    /// <summary>
+    /// Where this app keeps what it must keep — the token set, the mirror's snapshots, the run's log
+    /// and the sign-in sheet's browser profile.
+    /// </summary>
     public static string DataDirectory =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Helmsley Drive");
+
+    /// <summary>
+    /// The sign-in sheet's own cookie jar (<see cref="SignInWindow"/>). Named here rather than left
+    /// to WebView2, which would put it next to the executable — unwritable under Program Files, and
+    /// so a sheet that fails to open on precisely the machines a shipped build runs on. Deleted by
+    /// <see cref="SignIn.ForgetBrowserSession"/> on sign-out: a portal session that outlived the
+    /// credential would sign the next person in as the last one.
+    /// </summary>
+    public static string BrowserProfileDirectory => Path.Combine(DataDirectory, "SignInBrowser");
 
     /// <summary>
     /// How often the materialised folders are re-listed — the ones somebody has opened, which is

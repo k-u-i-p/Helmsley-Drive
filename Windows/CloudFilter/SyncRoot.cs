@@ -54,6 +54,26 @@ public static unsafe class SyncRoot
     }
 
     /// <summary>
+    /// What the shell draws beside the drive in Explorer's navigation pane: the app's own icon —
+    /// the portal's H, the same one the Mac and iOS apps carry — as a path into the .ico that the
+    /// App project copies out beside its executable.
+    ///
+    /// A path is all the shell keeps, and it keeps it for as long as the registration lives, so a
+    /// build output moved out from under it goes back to a blank entry until the next Register.
+    /// Nothing to do about that from here, and it is a development concern only: an installed app
+    /// stays where it was installed.
+    ///
+    /// The stock cloud-folder glyph remains the answer when the file is not there — the harness
+    /// registers roots too, out of its own output directory, and an unillustrated probe root is a
+    /// better outcome than a registration that fails over an icon.
+    /// </summary>
+    static string Icon()
+    {
+        var icon = Path.Combine(AppContext.BaseDirectory, "HelmsleyDrive.ico");
+        return File.Exists(icon) ? $"{icon},0" : "%SystemRoot%\\system32\\imageres.dll,-1043";
+    }
+
+    /// <summary>
     /// Registers through the shell's storage-provider manager rather than the raw filter: the same
     /// cloud-files plumbing underneath, plus what CfRegisterSyncRoot alone never gave — the drive
     /// as its own entry in Explorer's navigation pane, with the cloud status column beside it.
@@ -66,8 +86,7 @@ public static unsafe class SyncRoot
             Id = id,
             Path = StorageFolder.GetFolderFromPathAsync(path).GetAwaiter().GetResult(),
             DisplayNameResource = "Helmsley Drive",
-            // A stock cloud-folder glyph until the app has an icon of its own to point at.
-            IconResource = "%SystemRoot%\\system32\\imageres.dll,-1043",
+            IconResource = Icon(),
             Version = "1.0",
             // What comes back on every callback as SyncRootIdentity. One root per process makes it
             // redundant today and the registration scheme deliberately allows a second, at which

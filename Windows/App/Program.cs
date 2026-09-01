@@ -58,8 +58,14 @@ static class Program
         {
             var busy = $"Helmsley Drive is already running on {root}.";
             if (headless || maintenance) Console.Error.WriteLine(busy + " Close it first.");
-            else MessageBox.Show("Helmsley Drive is already running.", "Helmsley Drive",
-                MessageBoxButton.OK, MessageBoxImage.Information);
+            // Not a message box first. Since the tray, a running instance need not be a visible
+            // one, and this second launch is almost always somebody clicking the shortcut to get
+            // the window back — so ask the instance that holds the root for it. The box is what
+            // is left when nobody answers: an instance still starting, or a maintenance flag
+            // holding the lock, neither of which has a window to offer.
+            else if (!ShowRequest.Send(rootKey))
+                MessageBox.Show("Helmsley Drive is already running.", "Helmsley Drive",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -84,15 +90,37 @@ static class Program
 
         RedirectConsoleToLog();
 
+        // Visual styles before anything has a window: the tray menu is a WinForms control, and
+        // without this it draws in the pre-XP theme in the middle of a modern desktop.
+        System.Windows.Forms.Application.EnableVisualStyles();
+
         // Software rendering, always: WPF's hardware path drew this window as a blank white sheet
         // on VMware's virtual GPU while the visual tree underneath was perfectly sound, and a
         // status window this size has no rendering load worth a driver lottery.
         System.Windows.Media.RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
 
+        // The Application before the window, not after: the header's mark is loaded through a pack
+        // URI, and the pack scheme is only registered once an Application exists — built the other
+        // way round, the window's constructor throws on a URI that is perfectly well formed.
+        // OnExplicitShutdown, because the window closing is no longer the app ending — it is the
+        // window going to the tray, and the default mode would take the process with it.
+        var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         var model = new AppModel(root, snapshotPath);
         var window = new MainWindow(model);
-        window.Closed += (_, _) => model.Shutdown();
-        new Application().Run(window);
+        app.MainWindow = window;
+
+        using var tray = new TrayIcon(model, window);
+        using var showRequests = ShowRequest.Listen(rootKey, tray.Reveal);
+
+        // Mounting hangs off the application rather than off the window being shown: --background
+        // is a login start, where the window is never shown at all and a drive that waited for it
+        // would be a drive that never mounted.
+        app.Startup += async (_, _) => await model.Startup();
+        if (!Given(args, "--background")) window.Show();
+        app.Run();
+
+        // After Run returns, which is after Quit: the engine outlives every close but that one.
+        model.Shutdown();
     }
 
     /// <summary>
@@ -119,6 +147,7 @@ static class Program
 
         TokenProvider.Shared.SignOut();
         DeleteSnapshots();
+        SignIn.ForgetBrowserSession();
 
         Console.WriteLine("Signed out. The sync root is unregistered and its tree removed."
             + (keptAt is null ? "" : $" Files the portal had not taken yet are at {keptAt}."));
