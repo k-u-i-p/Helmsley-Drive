@@ -53,6 +53,28 @@ public static class LocalNames
     }
 
     /// <summary>
+    /// A name that is an editor's working state rather than a document: Office's <c>~$</c> owner
+    /// files, the <c>~WRD</c>/<c>~WRL</c> working copies a Word save writes and renames through,
+    /// LibreOffice's lock files, a browser's partial download, and the two Explorer drops into any
+    /// folder it has looked at. None of them is anything the portal should hold, and the safe-save
+    /// dance that produces the first two is the one <see cref="Mirror.OnRenaming"/> has to see
+    /// through: the original is set aside under one of these names while the new bytes take its
+    /// place, and then deleted. Uploaded literally, every save would rename the row, bin it, and
+    /// mint a new one for the same document.
+    ///
+    /// A row the portal itself holds under such a name still mirrors down; it is only the local
+    /// side that stays quiet about entries wearing one.
+    /// </summary>
+    public static bool IsTransient(string name) =>
+        name.StartsWith("~$", StringComparison.Ordinal)
+        || name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
+        || name.EndsWith(".crdownload", StringComparison.OrdinalIgnoreCase)
+        || name.EndsWith(".partial", StringComparison.OrdinalIgnoreCase)
+        || (name.StartsWith(".~lock.", StringComparison.Ordinal) && name.EndsWith('#'))
+        || string.Equals(name, "desktop.ini", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(name, "Thumbs.db", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
     /// A listing as the local disk can hold it. Two rows whose names collapse to the same legal
     /// name would fight over one entry; the loser is dropped here, loudly, rather than mirrored
     /// into an entry that flickers between two identities.

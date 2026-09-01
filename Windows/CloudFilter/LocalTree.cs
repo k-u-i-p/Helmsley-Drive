@@ -61,19 +61,69 @@ public static class LocalTree
         foreach (var entry in entries)
         {
             if (Directory.Exists(entry)) { Walk(entry, kept); continue; }
+            if (IsLocalOnly(entry)) kept.Add(entry);
+        }
+    }
+
+    /// <summary>
+    /// Whether one file holds bytes the portal does not. No identity means the portal never gave
+    /// it a row; dirty means it has one and the bytes on disk are newer than the ones behind it.
+    /// An editor's working file (<see cref="LocalNames.IsTransient"/>) is neither — it is state,
+    /// not a document — and is never worth keeping. Where the filter will not answer, the
+    /// dehydrated attribute is the one on-disk fact that still settles the question the safe way.
+    /// </summary>
+    public static bool IsLocalOnly(string file)
+    {
+        if (LocalNames.IsTransient(Path.GetFileName(file))) return false;
+        try
+        {
+            return Placeholders.TryGetState(file) is not { } state || state.DataDirty;
+        }
+        catch (Exception e)
+        {
+            if (Dehydrated(file)) return false;
+            Console.Error.WriteLine($"could not read the state of {file} ({e.Message}); keeping it");
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// Copies <paramref name="keep"/> out to <see cref="KeptAsideFrom"/>, leaving the originals
+    /// where they are. For the mirror, which cannot move anything: a move out of a live sync root
+    /// is a rename the filter would be asked about, and what is about to happen to the originals
+    /// is a delete the portal asked for. Answers where the copies went, or null if nothing was
+    /// copied — and a copy that fails is said aloud rather than thrown, since the caller's delete
+    /// then has to be the one that does not happen.
+    /// </summary>
+    public static string? CopyAside(string root, IReadOnlyList<string> keep, out bool complete)
+    {
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        var keptAt = KeptAsideFrom(root);
+        var anyKept = false;
+        complete = true;
+        foreach (var path in keep)
+        {
             try
             {
-                // No identity means the portal never gave it a row. Dirty means it has one and the
-                // bytes on disk are newer than the ones behind it.
-                if (Placeholders.TryGetState(entry) is not { } state || state.DataDirty) kept.Add(entry);
+                if (!File.Exists(path))
+                {
+                    // A directory that could not be read is on the list as a whole; a copy of it
+                    // is exactly what cannot be made, so it counts as not set aside.
+                    complete = false;
+                    continue;
+                }
+                var landing = Unused(Path.Combine(keptAt, Path.GetRelativePath(full, path)));
+                Directory.CreateDirectory(Path.GetDirectoryName(landing)!);
+                File.Copy(path, landing);
+                anyKept = true;
             }
             catch (Exception e)
             {
-                if (Dehydrated(entry)) continue;
-                Console.Error.WriteLine($"could not read the state of {entry} ({e.Message}); keeping it");
-                kept.Add(entry);
+                Console.Error.WriteLine($"could not set {path} aside ({e.Message})");
+                complete = false;
             }
         }
+        return anyKept ? keptAt : null;
     }
 
     /// <summary>
@@ -110,16 +160,62 @@ public static class LocalTree
             }
         }
 
-        try
-        {
-            Directory.Delete(full, recursive: true);
-            Console.WriteLine($"- {full} (signed out)");
-        }
-        catch (Exception e)
-        {
-            Console.Error.WriteLine($"could not remove {full} ({e.Message}); it can be deleted by hand");
-        }
+        // Entry by entry rather than one recursive delete, which stops at the first thing it
+        // cannot remove — a document still open in Word — and leaves everything after it in
+        // place, snapshot gone and registration gone, for the next mount to find as a tree of
+        // ordinary files wearing the portal's names. Removing everything that will go leaves only
+        // the locked file and the directories above it, which the next pass takes up again.
+        var left = DeleteTree(full);
+        if (left == 0) Console.WriteLine($"- {full} (signed out)");
+        else Console.Error.WriteLine(
+            $"{left} entries under {full} could not be removed — open in another program, most likely. " +
+            "The rest of the tree has gone; those are taken up again by the next mount, or can be deleted by hand.");
         return anyKept ? keptAt : null;
+    }
+
+    /// <summary>Removes what it can under <paramref name="directory"/>, and answers how much it could not.</summary>
+    static int DeleteTree(string directory)
+    {
+        var left = 0;
+        IEnumerable<string> entries;
+        try { entries = Directory.EnumerateFileSystemEntries(directory); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"could not read {directory} ({e.Message})");
+            return 1;
+        }
+
+        foreach (var entry in entries)
+        {
+            try
+            {
+                if (Directory.Exists(entry))
+                {
+                    // A junction or a symlink inside the tree is removed as the link it is, never
+                    // walked: what it points at is not the drive's to delete. A placeholder
+                    // directory is a reparse point too, but not a link, and LinkTarget says so.
+                    if (new DirectoryInfo(entry).LinkTarget is not null) Directory.Delete(entry);
+                    else left += DeleteTree(entry);
+                }
+                else File.Delete(entry);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"could not remove {entry} ({e.Message})");
+                left++;
+            }
+        }
+
+        if (left == 0)
+        {
+            try { Directory.Delete(directory); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"could not remove {directory} ({e.Message})");
+                left++;
+            }
+        }
+        return left;
     }
 
     /// <summary>

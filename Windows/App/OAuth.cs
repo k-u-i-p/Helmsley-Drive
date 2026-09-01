@@ -177,13 +177,20 @@ public sealed class TokenProvider
         try
         {
             int generation;
+            TokenSet? held;
             lock (_gate)
             {
                 if (_cached is { IsAccessTokenFresh: true } cached) return cached.AccessToken;
                 generation = _generation;
+                held = _cached;
             }
 
-            var stored = TokenStore.Load() ?? throw new NotAuthenticatedException();
+            // Memory outranks the disk. A refresh whose save failed left memory holding the only
+            // live refresh token and the file holding one the server had already spent; reading
+            // the file first here would refresh with the spent one, be told invalid_grant, and
+            // sign out — the exact outcome "signed in until exit" below is meant to avoid. There
+            // is no other writer to make the file the newer of the two: one process holds the root.
+            var stored = held ?? TokenStore.Load() ?? throw new NotAuthenticatedException();
             if (stored.IsAccessTokenFresh)
             {
                 lock (_gate) { if (_generation == generation) _cached = stored; }

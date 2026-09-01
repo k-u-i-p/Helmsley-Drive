@@ -231,18 +231,41 @@ public sealed class HelmsleyApi
     // Everything hangs off api/files.
     static readonly Uri Base = new(Configuration.BaseUri, "api/files/");
 
-    // No total-elapsed timeout: HttpClient's default hundred seconds covers the body as well as
-    // the handshake, which against a 500MB file limit is a cap on how large a file may be opened at
-    // all rather than a guard against a stall. A connection that stops delivering is what the OS
-    // times out. PooledConnectionLifetime is for the other end of the same run: this process is
-    // meant to stay up for days, and a pooled connection would otherwise go on resolving to an
-    // address the portal has moved off.
+    // No client-wide timeout: HttpClient's default hundred seconds covers the body as well as the
+    // handshake, which against a 500MB file limit is a cap on how large a file may be opened at
+    // all rather than a guard against a stall. Patience is instead measured out per request
+    // below — and it has to be, because the OS does not time out a connection that has gone
+    // quiet: a laptop closed mid-listing came back to a poll loop waiting on a socket the far
+    // end had long forgotten, for as long as TCP takes to give up, with Sign Out and Quit both
+    // waiting behind it. PooledConnectionLifetime is for the other end of the same run: this
+    // process is meant to stay up for days, and a pooled connection would otherwise go on
+    // resolving to an address the portal has moved off.
     static readonly HttpClient Http = new(new SocketsHttpHandler
     {
         AllowAutoRedirect = false,
         PooledConnectionLifetime = TimeSpan.FromMinutes(5),
     })
     { Timeout = Timeout.InfiniteTimeSpan };
+
+    /// <summary>
+    /// How long anything that answers in JSON may take, headers and body together. Under the
+    /// sixty seconds the filter allows a held rename or delete, so a portal that has stopped
+    /// answering reaches Explorer as this refusal rather than as a timeout the platform words for
+    /// itself; and long enough that a listing of ten thousand rows is not what trips it.
+    /// </summary>
+    static readonly TimeSpan RequestPatience = TimeSpan.FromSeconds(45);
+
+    /// <summary>
+    /// The same for bytes on their way up, scaled to how many there are: two minutes, plus a
+    /// second for every hundred kilobytes — a floor of a hundred kilobytes a second, below which
+    /// the link is stalled rather than slow. Bytes on their way down are not timed at all past
+    /// the headers; the filter's own sixty-second clock on each chunk is the guard there.
+    /// </summary>
+    static TimeSpan TransferPatience(long bytes) =>
+        TimeSpan.FromMinutes(2) + TimeSpan.FromSeconds(bytes / (100 * 1024));
+
+    static ApiException Stalled(TimeSpan within) =>
+        new(0, $"The portal did not answer within {within.TotalSeconds:0} seconds.");
 
     // MARK: Reads
 
@@ -274,12 +297,21 @@ public sealed class HelmsleyApi
     /// </summary>
     public async Task<Stream> DownloadContents(string id)
     {
-        var response = await Follow(() => Authorised(HttpMethod.Get, DocumentPath(id) + "/content")).ConfigureAwait(false);
+        // Timed to the headers only: the token goes out of scope with this method, so the body
+        // the caller reads afterwards is under no clock but the filter's.
+        using var patience = new CancellationTokenSource(RequestPatience);
+        HttpResponseMessage response;
+        try
+        {
+            response = await Follow(() => Authorised(HttpMethod.Get, DocumentPath(id) + "/content"), patience.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (patience.IsCancellationRequested) { throw Stalled(RequestPatience); }
         try
         {
             if (!response.IsSuccessStatusCode)
                 throw new ApiException((int)response.StatusCode, $"Could not download file {id}.");
-            return new Body(response, await response.Content.ReadAsStreamAsync().ConfigureAwait(false));
+            return new Body(response, await response.Content.ReadAsStreamAsync(patience.Token).ConfigureAwait(false));
         }
         catch
         {
@@ -373,8 +405,17 @@ public sealed class HelmsleyApi
         request.Content.Headers.TryAddWithoutValidation("Content-Type", ticket.ContentType);
         request.Headers.TryAddWithoutValidation("x-goog-content-length-range", $"0,{ticket.MaxBytes}");
 
-        using var response = await Http.SendAsync(request).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode) throw ApiException.UploadRejected((int)response.StatusCode);
+        var within = TransferPatience(stream.Length);
+        using var patience = new CancellationTokenSource(within);
+        try
+        {
+            using var response = await Http.SendAsync(request, patience.Token).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode) throw ApiException.UploadRejected((int)response.StatusCode);
+        }
+        catch (OperationCanceledException) when (patience.IsCancellationRequested)
+        {
+            throw new ApiException(0, $"The upload stalled: Cloud Storage did not take the bytes within {within.TotalMinutes:0} minutes.");
+        }
         return ticket.UploadId;
     }
 
@@ -460,9 +501,7 @@ public sealed class HelmsleyApi
 
     async Task<T> Send<T>(HttpMethod method, string path, Dictionary<string, object?>? body)
     {
-        using var response = await Follow(() => Authorised(method, path, body)).ConfigureAwait(false);
-        var data = await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false);
-        ThrowOnFailure(method, path, response, data);
+        var data = await Answer(method, path, body).ConfigureAwait(false);
         try
         {
             return JsonSerializer.Deserialize<T>(data) ?? throw ApiException.Malformed;
@@ -473,10 +512,25 @@ public sealed class HelmsleyApi
         }
     }
 
-    async Task SendExpectingNothing(HttpMethod method, string path, Dictionary<string, object?>? body)
+    async Task SendExpectingNothing(HttpMethod method, string path, Dictionary<string, object?>? body) =>
+        await Answer(method, path, body).ConfigureAwait(false);
+
+    /// <summary>The whole of a JSON call's body, or the refusal — inside <see cref="RequestPatience"/>, headers and body both.</summary>
+    async Task<byte[]> Answer(HttpMethod method, string path, Dictionary<string, object?>? body)
     {
-        using var response = await Follow(() => Authorised(method, path, body)).ConfigureAwait(false);
-        ThrowOnFailure(method, path, response, await response.Content.ReadAsByteArrayAsync().ConfigureAwait(false));
+        using var patience = new CancellationTokenSource(RequestPatience);
+        try
+        {
+            using var response = await Follow(() => Authorised(method, path, body), patience.Token).ConfigureAwait(false);
+            var data = await response.Content.ReadAsByteArrayAsync(patience.Token).ConfigureAwait(false);
+            ThrowOnFailure(method, path, response, data);
+            return data;
+        }
+        catch (OperationCanceledException) when (patience.IsCancellationRequested)
+        {
+            Console.Error.WriteLine($"{method} {path} -> no answer within {RequestPatience.TotalSeconds:0}s");
+            throw Stalled(RequestPatience);
+        }
     }
 
     static void ThrowOnFailure(HttpMethod method, string path, HttpResponseMessage response, byte[] data)
@@ -506,12 +560,12 @@ public sealed class HelmsleyApi
     /// </summary>
     const int MaxHops = 5;
 
-    static async Task<HttpResponseMessage> Follow(Func<Task<HttpRequestMessage>> make)
+    static async Task<HttpResponseMessage> Follow(Func<Task<HttpRequestMessage>> make, CancellationToken patience)
     {
         using var first = await make().ConfigureAwait(false);
         var origin = first.RequestUri!;
         HttpResponseMessage? response =
-            await Http.SendAsync(first, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+            await Http.SendAsync(first, HttpCompletionOption.ResponseHeadersRead, patience).ConfigureAwait(false);
 
         try
         {
@@ -546,7 +600,7 @@ public sealed class HelmsleyApi
                     // this line there is no way to tell a stripped redirect from one that quietly
                     // carried the token on.
                     Console.WriteLine($"redirect to {target.Host} — Authorization stripped");
-                response = await Http.SendAsync(next, HttpCompletionOption.ResponseHeadersRead).ConfigureAwait(false);
+                response = await Http.SendAsync(next, HttpCompletionOption.ResponseHeadersRead, patience).ConfigureAwait(false);
             }
         }
         catch

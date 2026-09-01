@@ -132,6 +132,77 @@ try
         File.Exists(Path.Combine(root, "Docs", "precious.txt")) && !portal.IsTrashed(refused));
     portal.RefuseWrites = false;
 
+    // MARK: What the close path cannot hear, and what the pass hears for it
+
+    // A folder moved in from outside the drive — same volume, so a rename rather than a copy —
+    // reaches the watcher as one event for the directory and none for anything inside it.
+    var staged = Path.Combine(Path.GetTempPath(), "Helmsley Harness moved in");
+    if (Directory.Exists(staged)) Directory.Delete(staged, recursive: true);
+    Directory.CreateDirectory(Path.Combine(staged, "Deeper"));
+    File.WriteAllText(Path.Combine(staged, "inside.txt"), "came along");
+    File.WriteAllText(Path.Combine(staged, "Deeper", "further in.txt"), "and so did this");
+    Run($"move /y \"{staged}\" \"{Path.Combine(root, "Moved in")}\"");
+    await Until("a folder moved in from outside uploads everything inside it",
+        () => portal.FindByName("Moved in") is { } movedIn
+            && portal.FindByName("inside.txt") is { } inside && portal.ParentOf(inside) == movedIn
+            && portal.FindByName("Deeper") is { } deeper && portal.ParentOf(deeper) == movedIn
+            && portal.FindByName("further in.txt") is { } furtherIn && portal.ParentOf(furtherIn) == deeper);
+
+    // A local create whose first upload is refused stays an ordinary file the filter never
+    // mentions again; the pass has to find it.
+    portal.RefuseWrites = true;
+    Run($"echo first try refused> \"{Path.Combine(root, "Docs", "stranded.txt")}\"");
+    await Task.Delay(3000);
+    Check("a refused first upload leaves the file local-only", portal.FindByName("stranded.txt") is null);
+    portal.RefuseWrites = false;
+    await Task.Delay(1000);
+    await mirror.SyncPass();
+    await Until("and the next pass uploads it",
+        () => portal.FindByName("stranded.txt") is { } stranded
+            && Placeholders.TryGetState(Path.Combine(root, "Docs", "stranded.txt"))?.Id == stranded);
+
+    // Word's save: the original set aside under a working name, the new bytes renamed into its
+    // place, the working copy deleted. The row has to come through it with its id and its name.
+    var saved = portal.AddFile(docs, "letter.txt", "first draft");
+    await mirror.SyncPass();
+    Run($"echo second draft> \"{Path.Combine(root, "Docs", "~WRD0000.tmp")}\""
+        + $" & ren \"{Path.Combine(root, "Docs", "letter.txt")}\" \"~WRL0001.tmp\""
+        + $" & ren \"{Path.Combine(root, "Docs", "~WRD0000.tmp")}\" \"letter.txt\""
+        + $" & del /q \"{Path.Combine(root, "Docs", "~WRL0001.tmp")}\"");
+    // Trimmed, because cmd keeps the space before the "&" in what echo writes.
+    await Until("a safe save keeps the row, its name and its id",
+        () => portal.NameOf(saved) == "letter.txt" && !portal.IsTrashed(saved)
+            && portal.ContentOf(saved).Trim() == "second draft"
+            && portal.FindByName("~WRL0001.tmp") is null && portal.FindByName("~WRD0000.tmp") is null
+            && Placeholders.TryGetState(Path.Combine(root, "Docs", "letter.txt"))?.Id == saved);
+
+    // The row behind a name replaced by another row — trashed and re-uploaded under the same
+    // name — must not go on serving the old bytes under the new id.
+    var oldRow = portal.AddFile(docs, "swapped.txt", "the old bytes");
+    await mirror.SyncPass();
+    Check("the old row hydrates", TryRead(Path.Combine(root, "Docs", "swapped.txt")) == "the old bytes");
+    portal.Remove(oldRow);
+    var newRow = portal.AddFile(docs, "swapped.txt", "the new bytes, and longer");
+    await mirror.SyncPass();
+    Check("a row replaced under the same name re-hydrates to the new row's bytes",
+        Placeholders.TryGetState(Path.Combine(root, "Docs", "swapped.txt"))?.Id == newRow
+        && TryRead(Path.Combine(root, "Docs", "swapped.txt")) == "the new bytes, and longer");
+
+    // A save the portal has not taken, whose row the portal then drops: the pass removes the
+    // entry, and the bytes — the only copy anywhere — go aside rather than with it.
+    var dropped = portal.AddFile(docs, "edited then dropped.txt", "as the portal had it");
+    await mirror.SyncPass();
+    portal.RefuseWrites = true;
+    Run($"echo my edit> \"{Path.Combine(root, "Docs", "edited then dropped.txt")}\"");
+    await Task.Delay(3000);
+    portal.Remove(dropped);
+    await mirror.SyncPass();
+    portal.RefuseWrites = false;
+    Check("a local edit the portal never took survives the portal dropping its row",
+        !File.Exists(Path.Combine(root, "Docs", "edited then dropped.txt"))
+        && TryRead(Path.Combine(LocalTree.KeptAsideFrom(root), "Docs", "edited then dropped.txt")) == "my edit\r\n");
+    Directory.Delete(LocalTree.KeptAsideFrom(root), recursive: true);
+
     // MARK: Names, identity and cold starts
 
     portal.AddFile(docs, "Quote A*.txt", "the first");

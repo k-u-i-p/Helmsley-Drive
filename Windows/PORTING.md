@@ -27,8 +27,12 @@ it means. The engine is exercised by `Windows/Harness/` against an in-memory por
 Harness` in the VM — which covers the paths a browsing user walks: population, the diff, hydration,
 each local write mapped onto its portal call including a refusal, two portal names that collapse to
 one legal one, a declared folder materialising under a real row id, and a cold start whose snapshot
-did not survive. It does not cover the undelete, a move *into* the root, a failed fetch, or a portal
-slow enough to outlast the filter's patience with a held rename; those are read code, not run code.
+did not survive — and, since 2026-09-01, the cases the close path cannot hear: a folder moved in
+whole from outside the drive, a first upload that was refused and has to be found again by the
+pass, a Word-style safe save renaming and deleting its way around the original, a row replaced
+under its own name by another row, and a local edit whose row the portal dropped. It does not cover
+the undelete, a failed fetch, or a portal slow enough to outlast the filter's patience with a held
+rename; those are read code, not run code.
 What remains untested is the seam's far side against the live portal, and that
 is gated on the interactive sign-in, which needs a browser on the VM's desktop: run the app there
 once, sign in, and the mirror of the real tree is the proof.
@@ -290,6 +294,28 @@ next person believes the code.
   to an ordinary file, taking its identity with it. Hence the watcher, and hence the rule that
   bytes wearing a name the folder's snapshot already knows are a save over that row, never a new
   upload — minting a second row would fork the file.
+
+  Two more silences, found the hard way after that. A directory *moved* in from outside the drive
+  (same volume, so a rename) reaches the watcher as one event for the directory and none for
+  what is inside it, so `OnClosed` walks a new directory rather than merely minting it. And a
+  first upload that fails — a sharing violation from the indexer, a portal that was down — leaves
+  an ordinary file nothing will ever mention again: the filter is silent about it and the watcher
+  only speaks when it changes. So the sync pass, which is already standing in each materialised
+  directory with its entries in hand, uploads whatever it finds there that the listing does not
+  name and no row claims (`Mirror.UploadLocalOnly`), and adopts an ordinary file that *does* wear
+  a listed name — a leftover of a tree removal that stopped at a locked file — as a save over
+  that row, or as the row's own bytes when the length says so.
+- **Editors save through a dance, not a write.** Word writes `~WRD0000.tmp`, renames the
+  original to `~WRL0001.tmp`, renames the temp over the original's name, and deletes the backup.
+  Mapped literally that renamed the row, binned it and minted a new one for the same document on
+  every save. `LocalNames.IsTransient` names the working files (`~$` owner files, `.tmp`,
+  LibreOffice locks, `desktop.ini`, `Thumbs.db`); nothing wearing such a name is uploaded, a
+  rename *onto* one is allowed without telling the portal ("parked"), and the delete of a parked
+  entry is allowed without a trash — the row stays under its real name in the snapshot, so the
+  new bytes arriving under that name are a save over it. Only when the portal itself knows a row
+  by a transient name is a delete of it real. What this does not cover is an editor that
+  *replaces* the original in one rename (`MoveFileEx` with `REPLACE_EXISTING`), which the filter
+  reports as a delete of the target; that still bins the row and mints another.
 - **`TRACK_ALL` clears in-sync for a rename as readily as for a write.** In-sync alone is not
   "locally modified"; treating it as one had the engine push stale bytes over the portal's newer
   version. The verdict that means an upload is `ModifiedDataSize > 0` *and* not in sync, read from

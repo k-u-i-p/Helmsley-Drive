@@ -124,6 +124,7 @@ public sealed class Mirror : IDisposable
     {
         foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
         {
+            if (LocalNames.IsTransient(Path.GetFileName(entry))) continue;
             if (Directory.Exists(entry))
             {
                 if (Placeholders.TryGetState(entry) is null) await EnsureRemoteFolder(entry);
@@ -286,19 +287,66 @@ public sealed class Mirror : IDisposable
             previous.TryGetValue(item.Id, out var was);
             try
             {
-                accomplished.Add(await ApplyOne(directory, item, was, onDisk).ConfigureAwait(false));
+                accomplished.Add(await ApplyOne(folderId, directory, item, was, onDisk).ConfigureAwait(false));
             }
             catch (Exception e)
             {
                 // One item must not cost the folder: a name the filesystem refuses, a file held
                 // open — log it and let the rest of the listing land.
-                Console.Error.WriteLine($"mirror {item.Name} in {directory} failed: {e.Message}");
+                Console.Error.WriteLine($"mirror {item.Name} in {directory} failed: {e.Message.Trim()}"
+                    + (e is System.Runtime.InteropServices.COMException ? $" (0x{e.HResult:X8})" : ""));
                 if (was is not null) accomplished.Add(was);
             }
         }
 
         _snapshots.Reconcile(folderId, previous, accomplished);
+
+        await UploadLocalOnly(directory, onDisk, listing).ConfigureAwait(false);
         return listing;
+    }
+
+    /// <summary>
+    /// What the directory holds that the listing does not name and no row claims: a local create
+    /// whose upload never landed, or a folder moved in whole. The close path has no second try
+    /// to give these — the filter says nothing about an ordinary file, and the watcher speaks
+    /// only when one changes — so a first upload that met a sharing violation or a portal that
+    /// was down stayed local until the user happened to edit the file again. The pass is where
+    /// they are retried; it is already standing in the directory with its entries in hand.
+    /// </summary>
+    async Task UploadLocalOnly(string directory, HashSet<string> onDisk, IReadOnlyList<RemoteItem> listing)
+    {
+        var listed = new HashSet<string>(listing.Select(i => i.Name), StringComparer.OrdinalIgnoreCase);
+        foreach (var name in onDisk.Where(n => !listed.Contains(n) && !LocalNames.IsTransient(n)).ToList())
+        {
+            var path = Path.Combine(directory, name);
+            try
+            {
+                if (Directory.Exists(path))
+                {
+                    if (Placeholders.TryGetState(path) is null) await OnArrival(path).ConfigureAwait(false);
+                }
+                else if (File.Exists(path) && Placeholders.TryGetState(path) is null && Settled(path))
+                {
+                    await Upload(path).ConfigureAwait(false);
+                }
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine($"upload of {path} failed: {e.Message}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether a file has been left alone long enough to be read whole. The watcher's debounce
+    /// answers this for the close path; the pass, which meets a file at whatever moment it
+    /// happens to be walking, has to ask for itself — a copy still landing would otherwise go up
+    /// half-written, and a Word save caught between its rename and its write would go up empty.
+    /// </summary>
+    static bool Settled(string path)
+    {
+        try { return DateTime.UtcNow - File.GetLastWriteTimeUtc(path) > TimeSpan.FromSeconds(3); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return false; }
     }
 
     /// <summary>
@@ -327,8 +375,42 @@ public sealed class Mirror : IDisposable
                 continue;
             }
             if (was.IsFolder) _snapshots.Forget(was.Id);
-            DeleteLocal(Path.Combine(directory, was.Name), was.IsFolder);
+            var path = Path.Combine(directory, was.Name);
+            if (KeepLocalOnly(path)) DeleteLocal(path, was.IsFolder);
         }
+    }
+
+    /// <summary>
+    /// Before an entry the portal has stopped naming is removed: anything under it that only this
+    /// machine holds — a save that never went up, a file in a folder that never earned a row — is
+    /// copied out to the same place a sign-out keeps such files. The delete here is the portal's,
+    /// not the user's, and the engine's rule that no local operation may destroy the only copy of
+    /// any bytes has no exception for it. Answers whether the delete may go ahead: a copy that
+    /// could not be made leaves the entry standing, which the next pass will look at again.
+    /// </summary>
+    bool KeepLocalOnly(string path)
+    {
+        if (!IsUnderRoot(path)) return true;
+        IReadOnlyList<string> keep;
+        try
+        {
+            if (Directory.Exists(path)) keep = LocalTree.LocalOnly(path);
+            else if (File.Exists(path) && LocalTree.IsLocalOnly(path)) keep = new[] { path };
+            else return true;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"could not tell what under {path} is local-only ({e.Message}); leaving it");
+            return false;
+        }
+        if (keep.Count == 0) return true;
+
+        var keptAt = LocalTree.CopyAside(_root, keep, out var complete);
+        if (keptAt is not null)
+            Console.WriteLine($"! {path}: {keep.Count} file(s) the portal never took were copied to {keptAt}");
+        if (!complete)
+            Console.Error.WriteLine($"{path} is kept in place: not everything under it could be set aside");
+        return complete;
     }
 
     /// <summary>
@@ -337,7 +419,7 @@ public sealed class Mirror : IDisposable
     /// if what is on disk is newer than what the portal holds. Answers the row as the snapshot
     /// should now record it, which is not always the row that was listed.
     /// </summary>
-    async Task<RemoteItem> ApplyOne(string directory, RemoteItem item, RemoteItem? was, HashSet<string> onDisk)
+    async Task<RemoteItem> ApplyOne(string? folderId, string directory, RemoteItem item, RemoteItem? was, HashSet<string> onDisk)
     {
         var path = Path.Combine(directory, item.Name);
         var settled = item;
@@ -378,13 +460,54 @@ public sealed class Mirror : IDisposable
         // arriving as a transfer ends is dropped. One cleared by mere metadata motion — a rename
         // clears in-sync as readily as a write — is set right instead, or it would wear a pending
         // badge forever.
-        if (!item.IsFolder && onDisk.Contains(item.Name) && Placeholders.TryGetState(path) is { } standing)
+        if (onDisk.Contains(item.Name))
         {
-            if (standing.DataDirty || Truncated(path, standing)) await Upload(path).ConfigureAwait(false);
-            else if (!standing.InSync) Placeholders.MarkInSync(path);
+            var standing = Placeholders.TryGetState(path);
+            if (standing is null)
+            {
+                // An ordinary entry wearing this row's name. A directory that is only a directory
+                // — what a tree removal that stopped at a locked file leaves behind — takes the
+                // row's identity and carries on. A file is a save over the row: an overwriting
+                // CREATE_ALWAYS strips the placeholder, and a leftover hydrated file looks the
+                // same, so the bytes go up under this id rather than being left to sit as an
+                // orphan nothing will ever list or upload.
+                if (item.IsFolder) Placeholders.Convert(path, item.Id);
+                else if (Settled(path)) settled = await Adopt(folderId, path, item).ConfigureAwait(false);
+            }
+            else if (!item.IsFolder)
+            {
+                if (standing.DataDirty || Truncated(path, standing)) await Upload(path).ConfigureAwait(false);
+                else if (!standing.InSync) Placeholders.MarkInSync(path);
+            }
         }
 
         return settled;
+    }
+
+    /// <summary>
+    /// An ordinary file standing where a row's placeholder should be. If its length is the row's,
+    /// the bytes are taken to be the portal's own and the identity simply goes back on — a
+    /// re-send would cost the transfer and move the row's Date Modified for nothing. Otherwise
+    /// they are a save the portal has not seen, and they go up over the row: the snapshot is told
+    /// the row first so that the upload finds the name known and replaces rather than mints.
+    /// Answers the row as the snapshot should record it afterwards.
+    /// </summary>
+    async Task<RemoteItem> Adopt(string? folderId, string path, RemoteItem item)
+    {
+        long length;
+        try { length = new FileInfo(path).Length; }
+        catch (IOException) { return item; }
+
+        if (length == item.Size)
+        {
+            Placeholders.Convert(path, item.Id);
+            Console.WriteLine($"= {path} adopted ({item.Id})");
+            return item;
+        }
+
+        _snapshots.NoteItem(folderId, item);
+        await Upload(path).ConfigureAwait(false);
+        return _snapshots.Find(item.Id) ?? item;
     }
 
     /// <summary>What the directory actually holds, by name, for a pass that would otherwise stat every item twice.</summary>
@@ -407,6 +530,19 @@ public sealed class Mirror : IDisposable
     {
         var from = Path.Combine(directory, was.Name);
         var to = Path.Combine(directory, now.Name);
+
+        // Only this row's entry moves. The old name may by now be worn by another row's
+        // placeholder — a remote create that claimed it earlier in this same pass — and moving
+        // that one would carry the wrong identity to the new name and leave the claimant missing.
+        // An ordinary file there is a save over this row, and follows the name as it always has.
+        if (Path.Exists(from) && Placeholders.TryGetState(from) is { } standing
+            && !string.Equals(standing.Id, was.Id, StringComparison.Ordinal))
+        {
+            Console.WriteLine($"> {from} is {standing.Id}'s now; {now.Name} is created afresh");
+            if (!Path.Exists(to)) Placeholders.CreateOne(directory, now);
+            return;
+        }
+
         try
         {
             if (now.IsFolder) Directory.Move(from, to);
@@ -458,12 +594,18 @@ public sealed class Mirror : IDisposable
     {
         try
         {
+            // An editor's working file is not a document, and the safe-save dance it belongs to
+            // is handled by the rename and delete callbacks rather than by uploading its steps.
+            if (LocalNames.IsTransient(Path.GetFileName(path))) return;
             if (Directory.Exists(path))
             {
-                // A directory with no identity is a local mkdir; give it a row. (Whether directory
-                // handles report closes at all varies — EnsureRemoteFolder also runs lazily, the
-                // moment anything inside needs a parent id.)
-                if (Placeholders.TryGetState(path) is null) await EnsureRemoteFolder(path).ConfigureAwait(false);
+                // A directory with no identity is a local mkdir — or a folder moved in whole from
+                // outside the drive, which the watcher reports as one event for the directory and
+                // none at all for what is inside it. OnArrival mints the row and then walks the
+                // contents, which for a moved-in folder is the only way its files are ever heard
+                // of. (EnsureRemoteFolder also runs lazily, the moment anything inside needs a
+                // parent id.)
+                if (Placeholders.TryGetState(path) is null) await OnArrival(path).ConfigureAwait(false);
                 return;
             }
             if (!File.Exists(path)) return;
@@ -472,7 +614,7 @@ public sealed class Mirror : IDisposable
         catch (Exception e)
         {
             // The file stays out of sync on disk, which is the truth; the next close of it, or
-            // the next sync pass, is the retry.
+            // the next sync pass — which walks the directory for exactly these — is the retry.
             Console.Error.WriteLine($"upload of {path} failed: {e.Message}");
         }
     }
@@ -487,16 +629,24 @@ public sealed class Mirror : IDisposable
     /// </summary>
     async Task Upload(string path)
     {
-        if (!_uploading.TryAdd(path, false)) { _uploading[path] = true; return; }
+        // Claim the path, or leave a mark for whoever holds it — and each of those has to be one
+        // atomic step. A mark written after the holder had already let go was an entry nobody
+        // would ever clear: every later upload of that path, from the close callback, the watcher
+        // and the pass alike, found it, left its own mark, and returned, and the file stayed dirty
+        // until the app restarted. So a failed claim marks conditionally, and a failed mark — the
+        // holder left between the two calls — goes back round to claim.
+        while (!_uploading.TryAdd(path, false))
+        {
+            if (_uploading.TryUpdate(path, true, false) || _uploading.TryUpdate(path, true, true)) return;
+        }
         await _transfers.WaitAsync().ConfigureAwait(false);
         try
         {
-            var repeat = false;
             var minted = false;
             do
             {
                 _uploading[path] = false;
-                if (!File.Exists(path)) return;
+                if (!File.Exists(path)) continue;
 
                 var state = Placeholders.TryGetState(path);
                 if (state is null)
@@ -515,15 +665,21 @@ public sealed class Mirror : IDisposable
                     minted = false;
                 }
                 else if (!state.InSync) Placeholders.MarkInSync(path);
-
-                repeat = _uploading.TryGetValue(path, out var again) && again;
             }
-            while (repeat);
+            // Leaving is the same atomic step in reverse: the claim goes only if nothing has
+            // marked it since the top of this iteration, and a mark found here is another turn.
+            while (!_uploading.TryRemove(new KeyValuePair<string, bool>(path, false)));
+        }
+        catch
+        {
+            // Thrown out mid-loop the claim is still standing; it comes down whatever it says, or
+            // the path is stranded exactly as the race above used to strand it.
+            _uploading.TryRemove(path, out _);
+            throw;
         }
         finally
         {
             _transfers.Release();
-            _uploading.TryRemove(path, out _);
         }
     }
 
@@ -687,6 +843,23 @@ public sealed class Mirror : IDisposable
             var newDirectory = Path.GetDirectoryName(targetPath)!;
             var newName = Path.GetFileName(targetPath);
 
+            // What the portal calls the row, which is not always what the entry was called here:
+            // a name it was parked under (below) was never sent.
+            var portalName = _snapshots.Find(identity)?.Name ?? Path.GetFileName(sourcePath);
+
+            if (LocalNames.IsTransient(newName) && !LocalNames.IsTransient(portalName)
+                && PathsEqual(oldDirectory, newDirectory))
+            {
+                // A safe save's first step, Word's above all: the original is set aside under a
+                // working name while the new bytes take its place, and then deleted. The portal
+                // is told none of it. The row keeps its name, so the new bytes arriving under
+                // that name are a save over it rather than a new row; and the delete of the
+                // parked entry is dropped by OnDeleting on the same test. Sent literally, every
+                // save renamed the row, binned it and minted another for the same document.
+                Console.WriteLine($"parked {identity} as {newName}");
+                return true;
+            }
+
             if (!PathsEqual(oldDirectory, newDirectory))
             {
                 var moving = _snapshots.Find(identity);
@@ -702,7 +875,9 @@ public sealed class Mirror : IDisposable
                     Console.WriteLine($"> {targetPath} landed as {landed}; the next pass renames it");
             }
 
-            if (!string.Equals(Path.GetFileName(sourcePath), newName, StringComparison.Ordinal))
+            // Against the portal's name rather than the entry's: a parked row renamed back to its
+            // real name — an editor restoring its backup after a failed save — needs no call at all.
+            if (!string.Equals(portalName, newName, StringComparison.Ordinal) && !LocalNames.IsTransient(newName))
             {
                 var landed = Await(_remote.Rename(identity, newName));
                 _snapshots.NoteRenamed(identity, LocalNames.Legal(landed));
@@ -736,6 +911,16 @@ public sealed class Mirror : IDisposable
         if (identity is null) return true;
         try
         {
+            // A parked entry going (see OnRenaming), the save that parked it having finished: the
+            // row it carries lives on under its real name, and must not go to the bin with the
+            // working copy. Only when the portal itself knows the row by a working name is the
+            // delete a real one.
+            var name = Path.GetFileName(path);
+            if (LocalNames.IsTransient(name) && _snapshots.Find(identity) is { } row && !LocalNames.IsTransient(row.Name))
+            {
+                Console.WriteLine($"unparked {identity} ({name} deleted; the row stays as {row.Name})");
+                return true;
+            }
             Trash(identity);
             return true;
         }
@@ -799,6 +984,7 @@ public sealed class Mirror : IDisposable
     {
         try
         {
+            if (LocalNames.IsTransient(Path.GetFileName(path))) return;
             if (File.Exists(path))
             {
                 if (Placeholders.TryGetState(path) is { } state)

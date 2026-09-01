@@ -30,19 +30,23 @@ public static unsafe class Placeholders
     const int ERROR_ALREADY_EXISTS = unchecked((int)0x800700B7);
     const int ERROR_NOT_A_CLOUD_FILE = unchecked((int)0x80070178);
     const int ERROR_SHARING_VIOLATION = unchecked((int)0x80070020);
+    const int ERROR_LOCK_VIOLATION = unchecked((int)0x80070021);
+    const int ERROR_CANNOT_BREAK_OPLOCK = unchecked((int)0x80070322);
 
     /// <summary>
     /// Everything that pounces on a fresh entry — the search indexer, the antimalware scan —
     /// holds handles that live for moments, and a write can lose the race to any of them. A short
     /// retry is the difference between an update that works and one that fails whenever anything
-    /// else looks.
+    /// else looks. The exclusive open a dehydrate needs loses the same race with a different
+    /// word for it: the oplock it asks for cannot be granted over a handle somebody else holds.
     /// </summary>
     static void SharingRetries(Action attempt)
     {
         for (var tries = 0; ; tries++)
         {
             try { attempt(); return; }
-            catch (COMException e) when (e.HResult == ERROR_SHARING_VIOLATION && tries < 5)
+            catch (COMException e) when (tries < 5
+                && e.HResult is ERROR_SHARING_VIOLATION or ERROR_LOCK_VIOLATION or ERROR_CANNOT_BREAK_OPLOCK)
             {
                 Thread.Sleep(200 * (tries + 1));
             }
@@ -113,11 +117,24 @@ public static unsafe class Placeholders
 
             if (info.Result.Value == ERROR_ALREADY_EXISTS)
             {
-                // Something already answers to the name. If it is a placeholder, refresh it —
-                // identity included, since a re-run may find entries an older tree stamped. If it
-                // is an ordinary file, leave it: a local save is on its way to the portal, and the
-                // next pass reconciles whatever the portal made of it.
-                try { Update(Path.Combine(directory, item.Name), item, dehydrate: false); }
+                // Something already answers to the name. If it is a placeholder carrying this row,
+                // refresh it. If it is a placeholder carrying *another* row — the name's row was
+                // trashed and a replacement uploaded under the same name, or a local create was
+                // minted just as a remote one claimed the name — it changes identity, and its
+                // bytes have to go with the old one: re-stamped hydrated, it would serve the
+                // previous row's content under the new row's id and version, and no later pass
+                // would see anything to correct. If it is an ordinary file, leave it: the pass
+                // that asked for this create decides what a file wearing a row's name means.
+                var path = Path.Combine(directory, item.Name);
+                try
+                {
+                    if (TryGetState(path) is { } standing)
+                    {
+                        var another = !string.Equals(standing.Id, item.Id, StringComparison.Ordinal);
+                        if (another) Console.WriteLine($"~ {path}: {standing.Id} gives way to {item.Id}");
+                        Update(path, item, dehydrate: another && !item.IsFolder);
+                    }
+                }
                 catch (COMException e) when (e.HResult == ERROR_NOT_A_CLOUD_FILE) { }
                 return;
             }
