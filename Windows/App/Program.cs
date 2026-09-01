@@ -250,7 +250,7 @@ static class Program
         // folders Explorer is showing.
         var explorer = new ExplorerWatch(root, mirror);
         explorer.Start();
-        Console.WriteLine($"Ready. The tree fills in as it is browsed; a folder is re-checked when Explorer opens it, and the folders Explorer is showing every {Configuration.PollInterval.TotalMinutes:0} minutes. " +
+        Console.WriteLine($"Ready. The tree fills in as it is browsed; a folder is re-checked when Explorer opens it, and the folders Explorer is showing every {Configuration.PollIntervalInWords}. " +
             "Ctrl+C unmounts: the registration goes and the mirrored tree with it, since nothing answers for a sync root once this exits. " +
             "The credential stays — run with --sign-out to take that too.");
 

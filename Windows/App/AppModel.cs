@@ -233,7 +233,7 @@ public sealed class AppModel : INotifyPropertyChanged
             {
                 // A failed pass changes nothing on disk; the next one starts from the same snapshot.
                 Console.Error.WriteLine($"sync pass failed: {e.Message}");
-                ErrorMessage = $"The last check with the portal failed ({e.Message}). Trying again in {Configuration.PollInterval.TotalMinutes:0} minutes.";
+                ErrorMessage = $"The last check with the portal failed ({e.Message}). Trying again in {Configuration.PollIntervalInWords}.";
                 Changed();
             }
 

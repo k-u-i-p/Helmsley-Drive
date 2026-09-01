@@ -57,8 +57,13 @@ public static class Configuration
     /// Explorer navigates into it (ExplorerWatch, Mirror.SetOpen), so this only decides how long
     /// a folder left showing goes without hearing of a remote change. The portal has no change
     /// feed and Windows has no push yet (PORTING.md reserves that question). The Mac asks every
-    /// 30 seconds over the folders Finder has open; five minutes over a window or two is gentle
-    /// enough to leave running for days, and cheap enough to shorten if testers mind the wait.
+    /// 30 seconds over the folders Finder has open; a minute over a window or two is gentle
+    /// enough to leave running for days. Five minutes was the figure when the poll walked every
+    /// folder ever opened, and it was the walk that made it expensive, not the interval.
     /// </summary>
-    public static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(5);
+    public static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(1);
+
+    /// <summary>The interval as a sentence says it — "minute" or "5 minutes" — for the window and the console.</summary>
+    public static string PollIntervalInWords =>
+        PollInterval.TotalMinutes == 1 ? "minute" : $"{PollInterval.TotalMinutes:0} minutes";
 }
