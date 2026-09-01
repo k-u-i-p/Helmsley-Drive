@@ -471,8 +471,22 @@ public sealed class Mirror : IDisposable
                 // CREATE_ALWAYS strips the placeholder, and a leftover hydrated file looks the
                 // same, so the bytes go up under this id rather than being left to sit as an
                 // orphan nothing will ever list or upload.
-                if (item.IsFolder) Placeholders.Convert(path, item.Id);
-                else if (Settled(path)) settled = await Adopt(folderId, path, item).ConfigureAwait(false);
+                if (item.IsFolder)
+                {
+                    Placeholders.Convert(path, item.Id, onDemand: true);
+                    Console.WriteLine($"= {path}{Path.DirectorySeparatorChar} adopted ({item.Id})");
+                }
+                else if (LocalTree.Dehydrated(path))
+                {
+                    // A placeholder shell whose registration has gone: the attribute says its
+                    // bytes are in the bucket and nowhere here, whatever its length claims. Not
+                    // adoptable — converting it would claim nothing as the row's content — so it
+                    // gives way to a placeholder that can fetch.
+                    File.Delete(path);
+                    Placeholders.CreateOne(directory, item);
+                    Console.WriteLine($"+ {path} (in place of a stale shell)");
+                }
+                else if (Settled(path)) settled = await Adopt(folderId, directory, path, item).ConfigureAwait(false);
             }
             else if (!item.IsFolder)
             {
@@ -485,14 +499,19 @@ public sealed class Mirror : IDisposable
     }
 
     /// <summary>
-    /// An ordinary file standing where a row's placeholder should be. If its length is the row's,
-    /// the bytes are taken to be the portal's own and the identity simply goes back on — a
-    /// re-send would cost the transfer and move the row's Date Modified for nothing. Otherwise
-    /// they are a save the portal has not seen, and they go up over the row: the snapshot is told
-    /// the row first so that the upload finds the name known and replaces rather than mints.
-    /// Answers the row as the snapshot should record it afterwards.
+    /// An ordinary file standing where a row's placeholder should be. If its bytes hash to the
+    /// row's version they are the portal's own and the identity simply goes back on — a re-send
+    /// would cost the transfer and move the row's Date Modified for nothing. If they are the
+    /// row's length but not its bytes, they are almost certainly nothing at all: unregistration
+    /// turns a dehydrated placeholder into an ordinary file of exactly the declared length with
+    /// no content, and neither the reparse point nor the recall attribute survives to say so.
+    /// Those are set aside, never uploaded, and the row gets a placeholder that can fetch.
+    /// Any other length is a save the portal has not seen — a shell is always the declared
+    /// length — and it goes up over the row: the snapshot is told the row first so that the
+    /// upload finds the name known and replaces rather than mints. Answers the row as the
+    /// snapshot should record it afterwards.
     /// </summary>
-    async Task<RemoteItem> Adopt(string? folderId, string path, RemoteItem item)
+    async Task<RemoteItem> Adopt(string? folderId, string directory, string path, RemoteItem item)
     {
         long length;
         try { length = new FileInfo(path).Length; }
@@ -500,14 +519,45 @@ public sealed class Mirror : IDisposable
 
         if (length == item.Size)
         {
-            Placeholders.Convert(path, item.Id);
-            Console.WriteLine($"= {path} adopted ({item.Id})");
+            if (HasBytesOf(path, item))
+            {
+                Placeholders.Convert(path, item.Id);
+                Console.WriteLine($"= {path} adopted ({item.Id})");
+                return item;
+            }
+
+            var keptAt = LocalTree.CopyAside(_root, new[] { path }, out var complete);
+            if (!complete)
+            {
+                Console.Error.WriteLine($"{path} holds bytes that are not the row's and could not be set aside; leaving it");
+                return item;
+            }
+            File.Delete(path);
+            Placeholders.CreateOne(directory, item);
+            Console.WriteLine($"+ {path} (in place of bytes that were not the row's; those are at {keptAt})");
             return item;
         }
 
         _snapshots.NoteItem(folderId, item);
         await Upload(path).ConfigureAwait(false);
         return _snapshots.Find(item.Id) ?? item;
+    }
+
+    /// <summary>
+    /// Whether the file's bytes are the row's. The version is the portal's content hash — the
+    /// bucket's MD5, in hex — where the row has one, and an <c>id:</c> reference where it does
+    /// not, which verifies nothing and so answers no.
+    /// </summary>
+    static bool HasBytesOf(string path, RemoteItem item)
+    {
+        if (item.Version.Length != 32) return false;
+        try
+        {
+            using var stream = File.OpenRead(path);
+            var digest = System.Convert.ToHexString(System.Security.Cryptography.MD5.HashData(stream));
+            return string.Equals(digest, item.Version, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return false; }
     }
 
     /// <summary>What the directory actually holds, by name, for a pass that would otherwise stat every item twice.</summary>
@@ -669,6 +719,15 @@ public sealed class Mirror : IDisposable
             // Leaving is the same atomic step in reverse: the claim goes only if nothing has
             // marked it since the top of this iteration, and a mark found here is another turn.
             while (!_uploading.TryRemove(new KeyValuePair<string, bool>(path, false)));
+        }
+        catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException
+            || (e is System.Runtime.InteropServices.COMException
+                && e.HResult is unchecked((int)0x80070002) or unchecked((int)0x80070003)))
+        {
+            // Gone between the existence check and the read — renamed or moved on by the user
+            // while the debounce was still counting, which a safe save does within milliseconds.
+            // Not a failed upload; there is nothing at this path to upload.
+            _uploading.TryRemove(path, out _);
         }
         catch
         {

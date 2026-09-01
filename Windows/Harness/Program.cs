@@ -176,6 +176,18 @@ try
             && portal.FindByName("~WRL0001.tmp") is null && portal.FindByName("~WRD0000.tmp") is null
             && Placeholders.TryGetState(Path.Combine(root, "Docs", "letter.txt"))?.Id == saved);
 
+    // The other way editors save: the new bytes moved over the original in one rename. The
+    // filter says nothing about the placeholder that goes under it — no delete, no rename — so
+    // this is the watcher and the name rule alone, and the row has to come through with its id.
+    var replaced = portal.AddFile(docs, "replaced.txt", "before");
+    await mirror.SyncPass();
+    Run($"echo after>\"{Path.Combine(root, "Docs", "repl.new")}\""
+        + $" & move /y \"{Path.Combine(root, "Docs", "repl.new")}\" \"{Path.Combine(root, "Docs", "replaced.txt")}\"");
+    await Until("a replace in one rename is a save over the row",
+        () => !portal.IsTrashed(replaced) && portal.ContentOf(replaced).Trim() == "after"
+            && portal.FindByName("repl.new") is null
+            && Placeholders.TryGetState(Path.Combine(root, "Docs", "replaced.txt"))?.Id == replaced);
+
     // The row behind a name replaced by another row — trashed and re-uploaded under the same
     // name — must not go on serving the old bytes under the new id.
     var oldRow = portal.AddFile(docs, "swapped.txt", "the old bytes");
@@ -241,6 +253,66 @@ try
     await mirror.SyncPass();
     Check("a lost snapshot re-mirrors what is on disk rather than freezing it",
         File.Exists(Path.Combine(root, "after the cold start.txt")));
+
+    // MARK: A quit that could not take everything
+
+    // A tree removal with a document still open stops at that file, and the registration and
+    // the snapshot are gone regardless. The next mount has to take up what was left as the
+    // portal's own rows — and a folder that already held an entry must still be populated once,
+    // not listed again on every look because one of its entries could not be created.
+    await mirror.Quiesce(TimeSpan.FromSeconds(5));
+    var leftover = Path.Combine(root, "Docs", "a renamed.txt");
+    using (File.Open(leftover, FileMode.Open, FileAccess.Read, FileShare.None))
+    {
+        var nothingLocal = LocalTree.LocalOnly(root);
+        mirror.Dispose();
+        SyncRoot.Disconnect(key);
+        connected = false;
+        SyncRoot.Unregister(root);
+        registered = false;
+        LocalTree.Discard(root, nothingLocal);
+        File.Delete(snapshotPath);
+    }
+    Check("a locked file keeps only itself and its parents from going",
+        File.Exists(leftover) && !File.Exists(Path.Combine(root, "b.txt")) && !Directory.Exists(Path.Combine(root, "Made here")));
+
+    // What unregistration makes of a dehydrated placeholder that did not go: an ordinary file of
+    // the declared length holding nothing, with no attribute left to say so. Wearing a row's
+    // name and length, it must be neither adopted as the row's bytes nor uploaded as a save.
+    var shell = Path.Combine(root, "Docs", "precious.txt");
+    File.WriteAllText(shell, new string('x', "no deleting this".Length));
+    // Aged, or the pass leaves it alone as a file still being written.
+    File.SetLastWriteTimeUtc(shell, DateTime.UtcNow.AddMinutes(-1));
+
+    SyncRoot.Register(root);
+    registered = true;
+    mirror = new Mirror(portal, root, snapshotPath);
+    key = SyncRoot.Connect(root, portal, mirror);
+    connected = true;
+    mirror.StartWatching();
+    await mirror.SyncPass();
+    Check("the next mount takes the leftovers up as the portal's rows and fills in around them",
+        Placeholders.TryGetState(leftover)?.Id == a
+        && Placeholders.TryGetState(Path.Combine(root, "Docs"))?.Id == docs
+        && File.Exists(Path.Combine(root, "b.txt"))
+        && TryRead(leftover) == "the second version of a");
+    Check("a shell of the right length but the wrong bytes is set aside and fetched afresh, not adopted or uploaded",
+        Placeholders.TryGetState(shell)?.Id == refused
+        && TryRead(shell) == "no deleting this"
+        && portal.ContentOf(refused) == "no deleting this"
+        && File.Exists(Path.Combine(LocalTree.KeptAsideFrom(root), "Docs", "precious.txt")));
+    if (Directory.Exists(LocalTree.KeptAsideFrom(root))) Directory.Delete(LocalTree.KeptAsideFrom(root), recursive: true);
+
+    var rootListings = portal.Log.Count(entry => entry == "list /");
+    var docsListings = portal.Log.Count(entry => entry == $"list {docs}");
+    Look(root);
+    Look(root);
+    Look(Path.Combine(root, "Docs"));
+    Look(Path.Combine(root, "Docs"));
+    Check("and a folder that already held an entry is populated once, not on every look",
+        portal.Log.Count(entry => entry == "list /") <= rootListings + 1
+        && portal.Log.Count(entry => entry == $"list {docs}") <= docsListings + 1
+        && Directory.GetFiles(Path.Combine(root, "Docs"), "a renamed*").Length == 1);
 
     // MARK: What a sign-out takes away, and what it must not
 
@@ -547,7 +619,9 @@ sealed class FakePortal : IRemoteStore
 
     static readonly DateTimeOffset Stamp = new(2026, 8, 28, 12, 0, 0, TimeSpan.Zero);
 
+    // The version as the portal spells it: the bucket's MD5 of the content, in hex. The engine
+    // reads it to tell a row's own bytes from a stranger's, so the fake has to speak it too.
     static RemoteItem Item(Node node) =>
         new(node.Id, node.Name, node.IsFolder, node.Content.LongLength, Stamp, Stamp,
-            node.IsFolder ? "" : $"r{node.Revision}");
+            node.IsFolder ? "" : Convert.ToHexString(System.Security.Cryptography.MD5.HashData(node.Content)).ToLowerInvariant());
 }

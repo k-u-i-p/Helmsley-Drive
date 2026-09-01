@@ -45,23 +45,37 @@ public static unsafe class Populator
                 return;
             }
 
+            // What the directory already holds is not transferred. The platform honours the
+            // fully-populated mark only if every entry in the transfer was created, and an entry
+            // whose name is already taken is not — so a directory with one leftover in it (a
+            // tree removal that stopped at an open file; a local create racing the first look)
+            // was asked about again on every look, for the life of the registration. The
+            // leftovers are the pass's to take up: it adopts an ordinary entry wearing a listed
+            // name as that row, and keeps a placeholder true as it does any other. This process
+            // sees an unpopulated directory raw, so the enumeration here is exactly the disk.
+            var directory = LocalChanges.FullPath(info, info->NormalizedPath);
+            var standing = Existing(directory);
+            var fresh = standing.Count == 0 ? listing : listing.Where(i => !standing.Contains(i.Name)).ToList();
+            if (fresh.Count < listing.Count)
+                Console.WriteLine($"population of {folderId ?? "/"}: {listing.Count - fresh.Count} of {listing.Count} entries already on disk; the pass takes those up");
+
             // The names and identities must stay pinned until CfExecute has copied the entries out.
-            var natives = new IntPtr[listing.Count * 2];
-            var entries = new CF_PLACEHOLDER_CREATE_INFO[listing.Count];
+            var natives = new IntPtr[fresh.Count * 2];
+            var entries = new CF_PLACEHOLDER_CREATE_INFO[fresh.Count];
             uint created;
             bool taken;
             try
             {
-                for (var i = 0; i < listing.Count; i++)
+                for (var i = 0; i < fresh.Count; i++)
                 {
-                    natives[i * 2] = Marshal.StringToHGlobalUni(listing[i].Name);
-                    natives[i * 2 + 1] = Marshal.StringToHGlobalUni(listing[i].Id);
-                    entries[i] = Placeholders.Describe(listing[i], (char*)natives[i * 2], (char*)natives[i * 2 + 1]);
+                    natives[i * 2] = Marshal.StringToHGlobalUni(fresh[i].Name);
+                    natives[i * 2 + 1] = Marshal.StringToHGlobalUni(fresh[i].Id);
+                    entries[i] = Placeholders.Describe(fresh[i], (char*)natives[i * 2], (char*)natives[i * 2 + 1]);
                 }
 
                 fixed (CF_PLACEHOLDER_CREATE_INFO* array = entries)
                 {
-                    taken = Transfer(info, array, listing.Count, listing.Count, 0, out created);
+                    taken = Transfer(info, array, fresh.Count, fresh.Count, 0, out created);
                 }
             }
             finally
@@ -83,18 +97,36 @@ public static unsafe class Populator
                 if (entries[i].Result.Succeeded) continue;
                 if (refused++ == 0) first = entries[i].Result.Value;
             }
-            if (created != listing.Count || refused > 0)
+            if (created != fresh.Count || refused > 0)
             {
                 Console.Error.WriteLine(
-                    $"population of {folderId ?? "/"} placed {created} of {listing.Count} entries, " +
+                    $"population of {folderId ?? "/"} placed {created} of {fresh.Count} entries, " +
                     $"{refused} refused (first 0x{first:X8}); leaving the folder on demand");
                 return;
             }
 
+            // The whole listing, leftovers included: the snapshot is what the pass diffs against,
+            // and a row left out of it would be met next time as something that just appeared.
             Mirror?.NoteListed(folderId, listing);
             Console.WriteLine($"= {folderId ?? "/"} populated ({listing.Count} entries)");
         }
         catch (Exception e) { Callbacks.Fell("fetch-placeholders", e); }
+    }
+
+    /// <summary>The names the directory holds right now, or none if it cannot be read — in which case every entry is transferred and the platform says which are taken.</summary>
+    static HashSet<string> Existing(string directory)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+                names.Add(Path.GetFileName(entry));
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"could not read {directory} before populating it: {e.Message}");
+        }
+        return names;
     }
 
     internal static void OnCancelFetchPlaceholders(CF_CALLBACK_INFO* info, CF_CALLBACK_PARAMETERS* parameters)

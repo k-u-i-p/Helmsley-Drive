@@ -197,14 +197,24 @@ public static unsafe class Placeholders
     /// last step of a local create, once the portal has answered with the row it minted. The bytes
     /// stay on disk; they are the portal's bytes now too, which is what in-sync asserts.
     /// </summary>
-    public static void Convert(string path, string id) => SharingRetries(() =>
+    /// <param name="onDemand">
+    /// For a directory only: whether the filter should still ask for its entries the first time
+    /// anything looks inside. False for a folder the user made here, whose contents are local
+    /// by definition; true for a directory adopted as one of the portal's — a leftover of a tree
+    /// removal — which may hold only what the removal could not take, with the rest still in the
+    /// portal. Converted without it, a directory counts as fully populated and nothing would
+    /// ever fetch the rest.
+    /// </param>
+    public static void Convert(string path, string id, bool onDemand = false) => SharingRetries(() =>
     {
         using var handle = ProtectedHandle.Open(path, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_WRITE_ACCESS);
+        var flags = CF_CONVERT_FLAGS.CF_CONVERT_FLAG_MARK_IN_SYNC;
+        if (onDemand) flags |= CF_CONVERT_FLAGS.CF_CONVERT_FLAG_ENABLE_ON_DEMAND_POPULATION;
         fixed (char* identity = id)
         {
             PInvoke.CfConvertToPlaceholder(handle.Win32Handle,
                 identity, (uint)(id.Length * sizeof(char)),
-                CF_CONVERT_FLAGS.CF_CONVERT_FLAG_MARK_IN_SYNC, null).ThrowOnFailure();
+                flags, null).ThrowOnFailure();
         }
     });
 

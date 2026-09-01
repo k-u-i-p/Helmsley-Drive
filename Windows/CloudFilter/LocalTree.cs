@@ -141,22 +141,26 @@ public static class LocalTree
         var keptAt = KeptAsideFrom(root);
         var anyKept = false;
 
+        // What cannot be set aside — held open, most often, which is also why its state could not
+        // be read and it is on the list at all — stays exactly where it is, spared from the
+        // delete below rather than stopping it. Everything else still goes; the next mount takes
+        // the spared file up again as the portal's own, or the user finds it where they left it.
+        var spared = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var path in keep)
         {
+            var landing = Unused(Path.Combine(keptAt, Path.GetRelativePath(full, path)));
             try
             {
-                var landing = Path.Combine(keptAt, Path.GetRelativePath(full, path));
                 Directory.CreateDirectory(Path.GetDirectoryName(landing)!);
-                if (Directory.Exists(path)) Directory.Move(path, Unused(landing));
-                else File.Move(path, Unused(landing));
+                if (Directory.Exists(path)) Directory.Move(path, landing);
+                else File.Move(path, landing);
                 anyKept = true;
             }
             catch (Exception e)
             {
-                // It stays where it is, and so does the tree around it: better an incomplete
-                // sign-out the user can see than bytes nothing else holds, quietly gone.
-                Console.Error.WriteLine($"could not set {path} aside ({e.Message}); leaving the tree in place");
-                return anyKept ? keptAt : null;
+                Console.Error.WriteLine($"could not set {path} aside ({e.Message}); it stays where it is");
+                spared.Add(Path.GetFullPath(path));
+                RemoveEmptyUpTo(Path.GetDirectoryName(landing)!, keptAt);
             }
         }
 
@@ -165,7 +169,7 @@ public static class LocalTree
         // place, snapshot gone and registration gone, for the next mount to find as a tree of
         // ordinary files wearing the portal's names. Removing everything that will go leaves only
         // the locked file and the directories above it, which the next pass takes up again.
-        var left = DeleteTree(full);
+        var left = DeleteTree(full, spared);
         if (left == 0) Console.WriteLine($"- {full} (signed out)");
         else Console.Error.WriteLine(
             $"{left} entries under {full} could not be removed — open in another program, most likely. " +
@@ -173,8 +177,26 @@ public static class LocalTree
         return anyKept ? keptAt : null;
     }
 
+    /// <summary>Takes away the empty directories a set-aside that failed had made for itself, up to and including <paramref name="stop"/>.</summary>
+    static void RemoveEmptyUpTo(string directory, string stop)
+    {
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(stop));
+        for (var at = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+             at.StartsWith(full, StringComparison.OrdinalIgnoreCase);
+             at = Path.GetDirectoryName(at) ?? "")
+        {
+            try
+            {
+                if (!Directory.Exists(at) || Directory.EnumerateFileSystemEntries(at).Any()) return;
+                Directory.Delete(at);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return; }
+            if (string.Equals(at, full, StringComparison.OrdinalIgnoreCase)) return;
+        }
+    }
+
     /// <summary>Removes what it can under <paramref name="directory"/>, and answers how much it could not.</summary>
-    static int DeleteTree(string directory)
+    static int DeleteTree(string directory, HashSet<string> spared)
     {
         var left = 0;
         IEnumerable<string> entries;
@@ -187,6 +209,7 @@ public static class LocalTree
 
         foreach (var entry in entries)
         {
+            if (spared.Contains(Path.GetFullPath(entry))) { left++; continue; }
             try
             {
                 if (Directory.Exists(entry))
@@ -195,7 +218,7 @@ public static class LocalTree
                     // walked: what it points at is not the drive's to delete. A placeholder
                     // directory is a reparse point too, but not a link, and LinkTarget says so.
                     if (new DirectoryInfo(entry).LinkTarget is not null) Directory.Delete(entry);
-                    else left += DeleteTree(entry);
+                    else left += DeleteTree(entry, spared);
                 }
                 else File.Delete(entry);
             }
@@ -223,7 +246,7 @@ public static class LocalTree
     /// something the filter has to be asked for, which makes it the one thing still legible about a
     /// cloud file once its provider has gone.
     /// </summary>
-    static bool Dehydrated(string path)
+    public static bool Dehydrated(string path)
     {
         const FileAttributes RecallOnDataAccess = (FileAttributes)0x00400000;
         try { return (File.GetAttributes(path) & RecallOnDataAccess) != 0; }

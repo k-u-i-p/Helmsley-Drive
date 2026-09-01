@@ -36,7 +36,7 @@ public static unsafe class LocalChanges
         info->ProcessInfo is not null && info->ProcessInfo->ProcessId == OwnProcessId;
 
     /// <summary>VolumeDosName + NormalizedPath: the filter names files volume-relative.</summary>
-    static string FullPath(CF_CALLBACK_INFO* info, PCWSTR volumeRelative)
+    internal static string FullPath(CF_CALLBACK_INFO* info, PCWSTR volumeRelative)
     {
         var volume = info->VolumeDosName.ToString();
         var path = volumeRelative.ToString();

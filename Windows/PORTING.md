@@ -29,8 +29,9 @@ each local write mapped onto its portal call including a refusal, two portal nam
 one legal one, a declared folder materialising under a real row id, and a cold start whose snapshot
 did not survive — and, since 2026-09-01, the cases the close path cannot hear: a folder moved in
 whole from outside the drive, a first upload that was refused and has to be found again by the
-pass, a Word-style safe save renaming and deleting its way around the original, a row replaced
-under its own name by another row, and a local edit whose row the portal dropped. It does not cover
+pass, a Word-style safe save renaming and deleting its way around the original, a replace in one
+rename, a row replaced under its own name by another row, a local edit whose row the portal
+dropped, and a sign-out that met an open file and the mount that came after it. It does not cover
 the undelete, a failed fetch, or a portal slow enough to outlast the filter's patience with a held
 rename; those are read code, not run code.
 What remains untested is the seam's far side against the live portal, and that
@@ -313,9 +314,23 @@ next person believes the code.
   rename *onto* one is allowed without telling the portal ("parked"), and the delete of a parked
   entry is allowed without a trash — the row stays under its real name in the snapshot, so the
   new bytes arriving under that name are a save over it. Only when the portal itself knows a row
-  by a transient name is a delete of it real. What this does not cover is an editor that
-  *replaces* the original in one rename (`MoveFileEx` with `REPLACE_EXISTING`), which the filter
-  reports as a delete of the target; that still bins the row and mints another.
+  by a transient name is a delete of it real. An editor that *replaces* the original in one
+  rename (`MoveFileEx` with `REPLACE_EXISTING`) needs none of this: the filter reports nothing
+  at all about the placeholder that goes under — no delete, no rename, measured in the harness —
+  so the watcher sees new bytes under a known name and the name rule uploads them over the row.
+- **The fully-populated mark is all or nothing, so the populator transfers only what is
+  missing.** An entry whose name the directory already holds is not created, and one such entry
+  costs the whole directory its mark — it is asked about again on every look, for the life of
+  the registration. So `Populator` enumerates the directory first (this process sees an
+  unpopulated directory raw) and transfers only the names not on disk; the rest are the pass's
+  to take up, which it does by adopting an ordinary entry wearing a listed name and keeping a
+  placeholder true as it does any other. A directory adopted that way is converted with
+  `ENABLE_ON_DEMAND_POPULATION`, or it would count as fully populated with only what the removal
+  could not take inside it. A file is adopted by content hash and never by length — `version` is
+  the bucket's MD5 in hex — because of what unregistration makes of a dehydrated placeholder it
+  did not remove: an ordinary file of exactly the declared length holding nothing, with neither
+  the reparse point nor the recall attribute left to say so (measured in the harness). One of
+  those is set aside and fetched afresh; only a file of some *other* length is a save to upload.
 - **`TRACK_ALL` clears in-sync for a rename as readily as for a write.** In-sync alone is not
   "locally modified"; treating it as one had the engine push stale bytes over the portal's newer
   version. The verdict that means an upload is `ModifiedDataSize > 0` *and* not in sync, read from
