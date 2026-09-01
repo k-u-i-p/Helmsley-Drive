@@ -243,12 +243,14 @@ static class Program
         mirror.StartWatching();
         Console.WriteLine($"Connected: {root}");
 
-        // No walk of the tree at all: the first pass has no materialised folder to keep true, the
-        // root's own listing arrives when a foreign process first opens the drive — the filter asks
-        // the populator for the root as readily as for any folder — everything below fetches the
-        // first time it is looked inside, and only folders that have been looked inside are
-        // re-checked by the poll.
-        Console.WriteLine($"Ready. The tree fills in as it is browsed; browsed folders are re-checked every {Configuration.PollInterval.TotalMinutes:0} minutes. " +
+        // No walk of the tree at all, and no listing at startup: the root's own listing arrives when
+        // a foreign process first opens the drive — the filter asks the populator for the root as
+        // readily as for any folder — everything below fetches the first time it is looked inside,
+        // a folder is refreshed when Explorer navigates into it, and the poll re-lists only the
+        // folders Explorer is showing.
+        var explorer = new ExplorerWatch(root, mirror);
+        explorer.Start();
+        Console.WriteLine($"Ready. The tree fills in as it is browsed; a folder is re-checked when Explorer opens it, and the folders Explorer is showing every {Configuration.PollInterval.TotalMinutes:0} minutes. " +
             "Ctrl+C unmounts: the registration goes and the mirrored tree with it, since nothing answers for a sync root once this exits. " +
             "The credential stays — run with --sign-out to take that too.");
 
@@ -270,6 +272,7 @@ static class Program
 
         // The local write path runs off the callbacks, so stopping the poll is not stopping the
         // engine: anything still uploading has to land before the sync root goes.
+        explorer.Dispose();
         await mirror.Quiesce(TimeSpan.FromSeconds(10));
 
         // And then all of it, in the order AppModel.Unmount and SignOut both keep: what only

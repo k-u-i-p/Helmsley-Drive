@@ -8,14 +8,19 @@ namespace HelmsleyDrive.CloudFilter;
 /// Answers FETCH_PLACEHOLDERS: something looked inside a directory whose entries have never been
 /// created. The filter names the directory by the identity stamped on its placeholder — the portal
 /// folder id, or nothing at all for the sync root — and this lists that one folder and hands its
-/// entries back through CfExecute. It is the other half of the mirror's economy: the sync pass
-/// only re-lists folders that have been looked at, and this is what "looked at" means.
+/// entries back through CfExecute. It is the first look, and the only one the filter reports:
+/// the transfer marks the directory fully populated, and from then on what keeps it true is the
+/// mirror's refresh of the folders Explorer is showing (<see cref="Mirror.SetOpen"/>).
 ///
-/// The listing also lands in the snapshot, so the folder is materialised and polled from then on —
-/// but only once the platform has confirmed it took every entry. A transfer with a failed entry in
-/// it does not earn the fully-populated mark, so the filter will ask again, and a folder recorded
-/// as materialised on the strength of a listing that half-landed would be a folder nothing ever
-/// completes.
+/// The listing also lands in the snapshot, so a refresh has something to diff against — but only
+/// once the platform has confirmed it took every entry. A transfer with a failed entry in it does
+/// not earn the fully-populated mark, so the filter will ask again, and a folder recorded on the
+/// strength of a listing that half-landed would be a folder nothing ever completes.
+///
+/// Why the directory is not simply left on demand, so that every look reached here: measured in
+/// the harness, an on-demand directory makes the provider the authority for every name lookup
+/// under it — hundreds of callbacks for one <c>dir</c>, and "the name of the file cannot be
+/// resolved" on a plain create. The mark is the platform's design, not an option.
 /// </summary>
 public static unsafe class Populator
 {
@@ -27,6 +32,7 @@ public static unsafe class Populator
         try
         {
             var folderId = Callbacks.Identity(info);
+            var directory = LocalChanges.FullPath(info, info->NormalizedPath);
             if (LocalChanges.Trace) Console.WriteLine($"  [fetch-placeholders] {folderId ?? "/"}");
 
             IReadOnlyList<RemoteItem> listing;
@@ -50,14 +56,13 @@ public static unsafe class Populator
             // whose name is already taken is not — so a directory with one leftover in it (a
             // tree removal that stopped at an open file; a local create racing the first look)
             // was asked about again on every look, for the life of the registration. The
-            // leftovers are the pass's to take up: it adopts an ordinary entry wearing a listed
+            // leftovers are the refresh's to take up: it adopts an ordinary entry wearing a listed
             // name as that row, and keeps a placeholder true as it does any other. This process
             // sees an unpopulated directory raw, so the enumeration here is exactly the disk.
-            var directory = LocalChanges.FullPath(info, info->NormalizedPath);
             var standing = Existing(directory);
             var fresh = standing.Count == 0 ? listing : listing.Where(i => !standing.Contains(i.Name)).ToList();
             if (fresh.Count < listing.Count)
-                Console.WriteLine($"population of {folderId ?? "/"}: {listing.Count - fresh.Count} of {listing.Count} entries already on disk; the pass takes those up");
+                Console.WriteLine($"population of {folderId ?? "/"}: {listing.Count - fresh.Count} of {listing.Count} entries already on disk; the refresh takes those up");
 
             // The names and identities must stay pinned until CfExecute has copied the entries out.
             var natives = new IntPtr[fresh.Count * 2];
@@ -88,8 +93,8 @@ public static unsafe class Populator
 
             // The fully-populated mark is only honoured when every entry in the transfer was
             // created. One that was not — a name an ordinary file already holds — leaves the
-            // directory on demand, so the filter asks again, and saying it is materialised here
-            // would tell the poll to keep a folder true that the population never finished.
+            // directory on demand, so the filter asks again, and recording the listing here would
+            // have a refresh diff against work that never happened.
             var refused = 0;
             var first = 0;
             for (var i = 0; i < entries.Length; i++)
@@ -105,9 +110,9 @@ public static unsafe class Populator
                 return;
             }
 
-            // The whole listing, leftovers included: the snapshot is what the pass diffs against,
+            // The whole listing, leftovers included: the snapshot is what a refresh diffs against,
             // and a row left out of it would be met next time as something that just appeared.
-            Mirror?.NoteListed(folderId, listing);
+            Mirror?.NoteListed(folderId, directory, listing);
             Console.WriteLine($"= {folderId ?? "/"} populated ({listing.Count} entries)");
         }
         catch (Exception e) { Callbacks.Fell("fetch-placeholders", e); }
@@ -150,8 +155,8 @@ public static unsafe class Populator
         parameters.Anonymous.TransferPlaceholders.PlaceholderTotalCount = total;
         if (status == 0)
             // The whole listing goes in one transfer, so the directory can be fully populated and
-            // the filter need not ask again — remote changes are the poll's to deliver from here.
-            // The platform honours this only if every entry lands, which is checked above.
+            // the filter need not ask again — remote changes are the refresh's to deliver from
+            // here. The platform honours this only if every entry lands, which is checked above.
             parameters.Anonymous.TransferPlaceholders.Flags =
                 CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_DISABLE_ON_DEMAND_POPULATION;
 

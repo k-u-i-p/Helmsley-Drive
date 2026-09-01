@@ -5,10 +5,11 @@ namespace HelmsleyDrive.CloudFilter;
 /// <summary>
 /// Keeps the local tree and the portal tree agreeing, in both directions.
 ///
-/// Portal to disk: a sync pass lists each folder, diffs it against the <see cref="SnapshotStore"/>,
+/// Portal to disk: a refresh lists one folder, diffs it against the <see cref="SnapshotStore"/>,
 /// and acts only on the difference — create what appeared, update what changed version, rename
-/// what changed name, delete what went. An item whose version still matches needs no work at all,
-/// which is what makes the pass cheap enough to repeat forever.
+/// what changed name, delete what went. An item whose version still matches needs no work at all.
+/// Which folder, and when, is the economy: the one Explorer has just navigated into, and the
+/// ones it is showing, on the poll. Nothing walks. See "Portal to disk" below.
 ///
 /// Disk to portal: the callback handlers below, called by <see cref="LocalChanges"/> when the
 /// filter reports a close, a rename or a delete. Each maps one local event onto one portal call
@@ -21,9 +22,8 @@ public sealed class Mirror : IDisposable
     readonly string _root;
     readonly SnapshotStore _snapshots;
 
-    // One pass at a time. A second ask does not merge into the running one — it waits its turn and
-    // then walks the materialised folders again, one listing each — so nothing on a callback path
-    // should ask for a pass.
+    // One refresh at a time. A second ask does not merge into the running one — it waits its turn
+    // and lists again — so nothing on a callback path may wait for one.
     readonly SemaphoreSlim _pass = new(1, 1);
 
     // One folder minted at a time: a directory and its first file arrive as separate events, and
@@ -118,7 +118,7 @@ public sealed class Mirror : IDisposable
     /// Everything under here that the portal has no row for. Only for the case where the watcher
     /// dropped events: an entry with an identity is the portal's already, and a dehydrated folder
     /// enumerates empty to this process — the filter never populates for the provider's own eyes —
-    /// so the walk stays inside what has actually been materialised.
+    /// so the walk stays inside what has actually been populated.
     /// </summary>
     async Task SweepForLocalOnly(string directory)
     {
@@ -197,58 +197,108 @@ public sealed class Mirror : IDisposable
     }
 
     // MARK: - Portal to disk
+    //
+    // The portal answers for what is being looked at, and for nothing else. Two things cause a
+    // folder to be listed. A first look — a foreign process enumerating a directory the filter
+    // has never populated, which the populator answers with a listing — and this: the folders
+    // Explorer is showing, told to the mirror by whoever can see that (ExplorerWatch, in the
+    // app). A folder newly shown is refreshed at once, and the poll re-lists the ones still
+    // showing. Neither walks. A folder nobody has opened sits unpopulated and costs nothing;
+    // one opened last week and left costs nothing either, until it is opened again.
+    //
+    // The design this replaced re-listed every folder ever opened, on every pass, breadth-first
+    // from the root: a cost that grew with the admin's history rather than with what they were
+    // doing, and one request per folder of it.
+
+    // The folders being shown right now, as last told. Replaced whole on every tell.
+    volatile IReadOnlyList<string> _open = Array.Empty<string>();
+
+    // When each folder was last listed, by whichever route. A folder that becomes open just
+    // after its population — which is the ordinary way a folder is first shown — is not listed
+    // twice for it, and the watcher's ticks are not a listing each.
+    readonly ConcurrentDictionary<string, DateTime> _listedAt = new(StringComparer.OrdinalIgnoreCase);
+    public static TimeSpan RecentlyListed { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>
-    /// Re-lists every *materialised* folder — one the snapshot knows, because population or an
-    /// earlier pass listed it — and acts on the difference. Folders nobody has looked inside are
-    /// not walked: their placeholders sit unpopulated, and their first enumeration fetches a
-    /// listing that is fresh by construction. That asymmetry is the whole economy — the portal
-    /// answers for what is being watched, not for everything it holds.
+    /// What is showing now. A folder that was not showing a moment ago has just been navigated
+    /// into, and is refreshed in the background — parents before children, so a rename of the
+    /// parent has settled the child's path first — unless it was listed moments ago. Folders no
+    /// longer showing simply drop out of the poll.
+    /// </summary>
+    public void SetOpen(IEnumerable<string> directories)
+    {
+        var was = _open;
+        var now = directories
+            .Select(d => Path.TrimEndingDirectorySeparator(Path.GetFullPath(d)))
+            .Where(IsUnderRootOrRoot)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _open = now;
+
+        var fresh = now
+            .Where(d => !was.Contains(d, StringComparer.OrdinalIgnoreCase))
+            .Where(d => !_listedAt.TryGetValue(d, out var at) || DateTime.UtcNow - at >= RecentlyListed)
+            .OrderBy(Depth)
+            .ToList();
+        if (fresh.Count == 0) return;
+        // Claimed before the work starts, so the next tell does not queue the same listing again.
+        foreach (var d in fresh) _listedAt[d] = DateTime.UtcNow;
+        Spawn(fresh[0], async _ =>
+        {
+            foreach (var d in fresh) await Refresh(d).ConfigureAwait(false);
+        });
+    }
+
+    /// <summary>The populator's listing, for a folder looked into for the first time: its snapshot from then on, and its latest listing.</summary>
+    public void NoteListed(string? folderId, string directory, IReadOnlyList<RemoteItem> items)
+    {
+        _snapshots.Record(folderId, items);
+        _listedAt[directory] = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// The poll: re-lists the folders that are showing, and only those. One request each. A
+    /// drive mounted with no Explorer window on it has nothing open, and costs nothing.
     /// </summary>
     public async Task SyncPass()
+    {
+        foreach (var directory in _open.OrderBy(Depth).ToList())
+            await Refresh(directory).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// One folder, named by path, brought true against one listing: what appeared is created,
+    /// what changed version is re-dehydrated, what changed name is renamed, what went is removed,
+    /// and what only this disk holds is uploaded. The root, or a placeholder whose identity says
+    /// which row it is; an ordinary directory wearing a listed name has no identity yet — its
+    /// parent's refresh is what adopts it — so it is left rather than guessed at.
+    /// </summary>
+    public async Task Refresh(string directory)
+    {
+        directory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
+        if (PathsEqual(directory, _root)) { await Refresh(null, directory).ConfigureAwait(false); return; }
+        if (!Directory.Exists(directory)) return;
+        if (Placeholders.TryGetState(directory) is { } state) await Refresh(state.Id, directory).ConfigureAwait(false);
+        else Console.Error.WriteLine($"{directory} carries no row identity; a refresh of its parent is what gives it one");
+    }
+
+    async Task Refresh(string? folderId, string directory)
     {
         await _pass.WaitAsync().ConfigureAwait(false);
         try
         {
-            // Breadth-first from the root, parents before children, so a rename applied to a
-            // folder has already settled the path its children are addressed by.
-            var due = new Queue<(string? Id, string Directory)>();
-            if (IsMaterialised(null, _root)) due.Enqueue((null, _root));
-            while (due.TryDequeue(out var folder))
-            {
-                var listing = await RefreshFolder(folder.Id, folder.Directory).ConfigureAwait(false);
-                if (listing is null) continue;
-                foreach (var child in listing.Where(i => i.IsFolder))
-                {
-                    var directory = Path.Combine(folder.Directory, child.Name);
-                    if (IsMaterialised(child.Id, directory)) due.Enqueue((child.Id, directory));
-                }
-            }
+            // Renamed or removed by a refresh of its parent since it was opened. Explorer follows
+            // the rename, and the next tell names the folder as it is now.
+            if (!Directory.Exists(directory)) return;
+            if (await RefreshFolder(folderId, directory).ConfigureAwait(false) is not null)
+                _listedAt[directory] = DateTime.UtcNow;
         }
         finally { _pass.Release(); }
     }
 
-    /// <summary>
-    /// Whether this folder is one the pass has to keep true.
-    ///
-    /// The snapshot is the ordinary answer. The disk is the fallback, and it matters: once a
-    /// folder has been populated the filter marks it fully populated *on disk* and never asks to
-    /// populate it again, so a folder whose snapshot has gone — a sign-out that left the tree
-    /// behind, an unreadable snapshot file, a folder that materialised under a new row id — would
-    /// otherwise be frozen for the life of the registration, with neither the filter nor the pass
-    /// willing to look at it. Entries on disk are what populated means; an unpopulated placeholder
-    /// directory enumerates empty to this process, so the economy holds.
-    /// </summary>
-    bool IsMaterialised(string? folderId, string directory)
-    {
-        if (_snapshots.Knows(folderId)) return true;
-        try { return Directory.Exists(directory) && Directory.EnumerateFileSystemEntries(directory).Any(); }
-        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return false; }
-    }
+    bool IsUnderRootOrRoot(string path) => PathsEqual(path, _root) || IsUnderRoot(path);
 
-    /// <summary>Public for the populator: a fetched listing is a materialised folder from then on.</summary>
-    public void NoteListed(string? folderId, IReadOnlyList<RemoteItem> items) =>
-        _snapshots.Record(folderId, items);
+    static int Depth(string path) => path.Count(c => c == Path.DirectorySeparatorChar);
 
     async Task<IReadOnlyList<RemoteItem>?> RefreshFolder(string? folderId, string directory)
     {
@@ -368,9 +418,8 @@ public sealed class Mirror : IDisposable
             if (names.TryGetValue(was.Name, out var now))
             {
                 // The entry survives the identity change, so its memory of what it contains must
-                // too. Forgetting it here strands a directory the filter has already marked fully
-                // populated: the filter will not offer to list it again, and the pass would no
-                // longer know to.
+                // too: forgotten, the next look inside it would be answered as a first population
+                // laid over entries it already holds, rather than as the difference it is.
                 if (was.IsFolder && now.IsFolder) _snapshots.Rekey(was.Id, now.Id);
                 continue;
             }
@@ -664,7 +713,7 @@ public sealed class Mirror : IDisposable
         catch (Exception e)
         {
             // The file stays out of sync on disk, which is the truth; the next close of it, or
-            // the next sync pass — which walks the directory for exactly these — is the retry.
+            // the next refresh of its folder — which looks for exactly these — is the retry.
             Console.Error.WriteLine($"upload of {path} failed: {e.Message}");
         }
     }

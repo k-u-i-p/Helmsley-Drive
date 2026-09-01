@@ -152,9 +152,9 @@ Two consequences worth holding on to. **Ending the Windows session is not quitti
 watches `Application.SessionEnding` and skips the unmount entirely, because Windows allows about
 five seconds before killing the process and a tree removal cut off partway is worse than one that
 never began — the `{userstartup}` shortcut is what reconciles the registration at the next login.
-And **the snapshot goes with the tree it describes**: kept, every folder it remembers would count
-as materialised, so the next mount's first pass would eagerly recreate placeholders for a tree
-whose whole economy is that it fills in as it is browsed.
+And **the snapshot goes with the tree it describes**: kept, it is what the next mount's refreshes
+would diff against — for a tree that has gone, or after a sign-in as somebody else, one that was
+never theirs.
 
 The alternative — unregister but keep what has been downloaded — was rejected because re-adopting
 it is not free: `Populator` refuses any entry whose name an ordinary file already holds and then
@@ -301,8 +301,8 @@ next person believes the code.
   what is inside it, so `OnClosed` walks a new directory rather than merely minting it. And a
   first upload that fails — a sharing violation from the indexer, a portal that was down — leaves
   an ordinary file nothing will ever mention again: the filter is silent about it and the watcher
-  only speaks when it changes. So the sync pass, which is already standing in each materialised
-  directory with its entries in hand, uploads whatever it finds there that the listing does not
+  only speaks when it changes. So a refresh, which is already standing in the directory with its
+  entries in hand, uploads whatever it finds there that the listing does not
   name and no row claims (`Mirror.UploadLocalOnly`), and adopts an ordinary file that *does* wear
   a listed name — a leftover of a tree removal that stopped at a locked file — as a save over
   that row, or as the row's own bytes when the length says so.
@@ -322,7 +322,7 @@ next person believes the code.
   missing.** An entry whose name the directory already holds is not created, and one such entry
   costs the whole directory its mark — it is asked about again on every look, for the life of
   the registration. So `Populator` enumerates the directory first (this process sees an
-  unpopulated directory raw) and transfers only the names not on disk; the rest are the pass's
+  unpopulated directory raw) and transfers only the names not on disk; the rest are the refresh's
   to take up, which it does by adopting an ordinary entry wearing a listed name and keeping a
   placeholder true as it does any other. A directory adopted that way is converted with
   `ENABLE_ON_DEMAND_POPULATION`, or it would count as fully populated with only what the removal
@@ -347,18 +347,29 @@ next person believes the code.
   `AlwaysFull` is the eager one it replaced, and `CF_POPULATION_POLICY_PARTIAL` is a cldapi-era name
   the platform does not support. Opening the drive costs nothing, a folder's entries are fetched
   (`Populator`) the first time a foreign process looks inside it, and that listing becomes the
-  folder's snapshot — "materialised" — which is what admits it to the poll. The sync pass walks
-  materialised folders only, so the portal answers for what is being watched, never for everything
-  it holds.
+  folder's snapshot. That is the only look the filter ever reports: the transfer marks the directory
+  fully populated, and from then on what keeps it true is a refresh (`Mirror.Refresh`) of the
+  folders Explorer is showing — `ExplorerWatch` in the app asks the shell's `Windows()` collection
+  every two seconds, a folder newly shown is refreshed at once (`Mirror.SetOpen`), and the poll
+  (`Mirror.SyncPass`) re-lists the ones still showing. Decided (Ben, 2026-09-02): the pass before
+  this re-listed every folder ever opened, breadth-first from the root, on every tick — one request
+  per folder of the admin's whole history, which does not scale. The portal answers for what is on
+  screen, and for no other folder. What the shell does not show — a folder open in another program's
+  Open or Save dialog — gets its population and then waits for Explorer.
 
-- **The fully-populated mark is conditional, and it is permanent.** `DISABLE_ON_DEMAND_POPULATION`
-  is honoured only if every placeholder in that transfer was created, so `Populator` checks
-  `EntriesProcessed` and each entry's own `Result` before it calls the folder materialised — one
-  refused entry and the filter will ask again, which is the retry. And the mark it does set lives on
-  the directory on disk, outlasting the registration and the snapshot both: a folder whose snapshot
-  is gone would be asked about by nobody, so `Mirror.SyncPass` falls back to "does the directory
-  hold entries" for what counts as materialised. Without that, a sign-out that left the tree behind
-  froze the whole drive for good.
+- **The fully-populated mark is conditional, and it is permanent — and it is not optional.**
+  `DISABLE_ON_DEMAND_POPULATION` is honoured only if every placeholder in that transfer was created,
+  so `Populator` checks `EntriesProcessed` and each entry's own `Result` before it records the
+  listing — one refused entry and the filter will ask again, which is the retry. The mark it does
+  set lives on the directory on disk, outlasting the registration and the snapshot both; a folder
+  whose snapshot is gone is not frozen by that, because its next refresh meets what the disk holds
+  entry by entry (`CreateOne` answers "already exists" with an update). Withholding the mark, so that
+  every later look reached the populator, was tried and measured (2026-09-02): an on-demand directory
+  makes the provider the authority for every name lookup under it, not only for enumeration —
+  thousands of `FETCH_PLACEHOLDERS` in one harness run, and "the name of the file cannot be resolved"
+  on a plain create inside that directory. The filter's open and close notifications do not cover
+  directory handles either, which is why "what is Explorer showing" is asked of the shell and not
+  of the filter.
 
 - **Notifications are not the platform's only opinion about scope.** `CF_CALLBACK_RENAME_FLAG_
   SOURCE_IN_SCOPE` and `_TARGET_IN_SCOPE` say whether each end of a rename is inside the sync root,

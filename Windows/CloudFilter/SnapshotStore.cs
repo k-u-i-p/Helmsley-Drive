@@ -39,19 +39,16 @@ public sealed class SnapshotStore : IDisposable
         }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException or JsonException)
         {
-            // No snapshot is a first run; an unreadable one becomes a first run. That is survivable
-            // rather than free — a folder the filter has already marked fully populated will never
-            // ask to be populated again, so Mirror.SyncPass falls back to what the disk holds to
-            // decide what to walk. See its "materialised" test.
+            // No snapshot is a first run; an unreadable one becomes a first run. Survivable
+            // rather than free: a folder the filter has already marked fully populated will never
+            // ask to be populated again, so its next refresh diffs a listing against nothing and
+            // meets what the disk already holds entry by entry — CreateOne answers "already
+            // exists" with an update — rather than freezing.
             return new();
         }
     }
 
-    /// <summary>
-    /// Whether the folder has ever been listed. A folder this store knows is materialised — its
-    /// entries exist on disk and the poll keeps them true; one it does not know has either never
-    /// been looked inside or lost its snapshot, which the pass tells apart by looking at the disk.
-    /// </summary>
+    /// <summary>Whether the folder has a listing on record — from its population, or from a refresh since.</summary>
     public bool Knows(string? folderId)
     {
         lock (_lock)
@@ -136,8 +133,8 @@ public sealed class SnapshotStore : IDisposable
     /// The same folder under a new row id: what the portal had only declared has been written, and
     /// the reference it was minted (<c>v&lt;parent&gt;_&lt;type&gt;</c>) has given way to a serial.
     /// The entry Explorer is holding survives that, so its memory of what it contains must too —
-    /// forgetting it strands a directory the filter has already marked fully populated, which
-    /// nothing will ever list again.
+    /// forgetting it strands a directory the filter has already marked fully populated, whose
+    /// next refresh would then have nothing to diff against.
     /// </summary>
     public void Rekey(string folderId, string nowFolderId)
     {

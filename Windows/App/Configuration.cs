@@ -52,12 +52,13 @@ public static class Configuration
     public static string BrowserProfileDirectory => Path.Combine(DataDirectory, "SignInBrowser");
 
     /// <summary>
-    /// How often the materialised folders are re-listed — the ones somebody has opened, which is
-    /// the only set either side ever polls. The portal has no change feed and Windows has no push
-    /// yet (PORTING.md reserves that question), so this is the only way a remote change arrives.
-    /// The Mac asks every 30 seconds over the same set; this asks less often because nothing here
-    /// is waiting on a Finder that refuses to re-enumerate, and a listing per opened folder every
-    /// five minutes is gentle enough to leave running for days.
+    /// How often the folders Explorer is showing are re-listed — one request each, and nothing
+    /// else, however many folders have been opened before. A folder is refreshed the moment
+    /// Explorer navigates into it (ExplorerWatch, Mirror.SetOpen), so this only decides how long
+    /// a folder left showing goes without hearing of a remote change. The portal has no change
+    /// feed and Windows has no push yet (PORTING.md reserves that question). The Mac asks every
+    /// 30 seconds over the folders Finder has open; five minutes over a window or two is gentle
+    /// enough to leave running for days, and cheap enough to shorten if testers mind the wait.
     /// </summary>
     public static readonly TimeSpan PollInterval = TimeSpan.FromMinutes(5);
 }

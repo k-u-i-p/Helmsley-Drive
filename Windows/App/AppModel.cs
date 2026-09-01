@@ -19,6 +19,7 @@ public sealed class AppModel : INotifyPropertyChanged
     readonly string _snapshotPath;
 
     Mirror? _mirror;
+    ExplorerWatch? _explorer;
     SyncConnection? _connection;
     CancellationTokenSource? _polling;
     Task? _loop;
@@ -176,6 +177,10 @@ public sealed class AppModel : INotifyPropertyChanged
             catch { mirror.Dispose(); throw; }
             mirror.StartWatching();
             _mirror = mirror;
+            // What Explorer is showing, which is what the poll covers and what a navigation
+            // refreshes. Started once the mirror is up, since it feeds the mirror.
+            _explorer = new ExplorerWatch(_root, mirror);
+            _explorer.Start();
         });
 
         IsMounted = true;
@@ -189,9 +194,9 @@ public sealed class AppModel : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// No walk of the tree: startup costs one listing (the root, which is no placeholder and so can
-    /// never ask for itself), everything below fetches the first time it is looked inside, and only
-    /// folders that have been looked inside are re-checked by the poll.
+    /// No walk of the tree, and no listing at startup: a folder is listed when something first
+    /// looks inside it, refreshed when Explorer navigates into it, and re-listed by the poll only
+    /// while Explorer is showing it.
     /// </summary>
     async Task Poll(CancellationToken quit)
     {
@@ -251,6 +256,10 @@ public sealed class AppModel : INotifyPropertyChanged
         // threw its way into the catch.
         if (!fromThePollLoop && _loop is not null && _loop != Task.CompletedTask) await _loop;
 
+        // First, so that no tell lands on a mirror that is quiescing.
+        _explorer?.Dispose();
+        _explorer = null;
+
         if (_mirror is { } mirror)
         {
             // Before the disconnect, and before the credential goes: an upload still running here
@@ -304,9 +313,8 @@ public sealed class AppModel : INotifyPropertyChanged
         var keptAt = LocalTree.Discard(_root, keep);
 
         // The snapshot described the tree that has just gone, and a snapshot outliving its tree is
-        // not merely stale: every folder it remembers counts as materialised, so the next mount's
-        // first pass would recreate their placeholders eagerly — for a tree whose whole economy is
-        // that it fills in as it is browsed.
+        // not merely stale: it is what the next mount's refreshes would diff against — for a tree
+        // that has gone, or after a sign-in as somebody else, one that was never theirs.
         Program.DeleteSnapshot(_snapshotPath);
 
         _registered = false;

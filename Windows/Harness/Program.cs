@@ -26,6 +26,7 @@ var portal = new FakePortal();
 var docs = portal.AddFolder(null, "Docs");
 portal.AddFile(null, "b.txt", "top-level bytes");
 var a = portal.AddFile(docs, "a.txt", "the first version of a");
+var docsDir = Path.Combine(root, "Docs");
 
 LocalChanges.Trace = true;
 Directory.CreateDirectory(root);
@@ -56,13 +57,20 @@ try
     Check("it was the looking that fetched the listings",
         portal.Log.Contains("list /") && portal.Log.Contains($"list {docs}"));
 
-    var listedOnce = portal.Log.Count;
+    // What Explorer is showing is told to the mirror by ExplorerWatch in the app; here the test
+    // stands in for it. Both folders were listed by their population a moment ago, so being
+    // shown does not list them again.
+    var populated = portal.Log.Count;
+    mirror.SetOpen(new[] { root, docsDir });
+    await Task.Delay(1000);
+    Check("a folder shown just after its population is not listed again for it", portal.Log.Count == populated);
     await mirror.SyncPass();
-    Check("a second pass re-lists what is materialised and changes nothing",
-        portal.Log.Count > listedOnce
-        && portal.Log.Skip(listedOnce).All(entry => entry.StartsWith("list "))
+    Check("the poll re-lists what is showing, parents first, and nothing else",
+        portal.Log.Count == populated + 2
+        && portal.Log[populated] == "list /" && portal.Log[populated + 1] == $"list {docs}"
         && File.Exists(Path.Combine(root, "Docs", "a.txt"))
         && File.Exists(Path.Combine(root, "b.txt")));
+    mirror.SetOpen(new[] { root });
 
     Check("hydration serves the fake bytes through FETCH_DATA",
         TryRead(Path.Combine(root, "Docs", "a.txt")) == "the first version of a");
@@ -72,10 +80,10 @@ try
     portal.RenameRemotely(a, "a renamed.txt");
     portal.ReplaceBytes(a, "the second version of a");
     var doomed = portal.AddFile(null, "doomed.txt", "soon gone");
-    await mirror.SyncPass();
+    await Sync(root, docsDir);
     portal.Remove(doomed);
-    await mirror.SyncPass();
-    Check("a pass creates what appeared, renames what moved, and removes what went",
+    await Sync(root, docsDir);
+    Check("a refresh creates what appeared, renames what moved, and removes what went",
         File.Exists(Path.Combine(root, "Docs", "later.txt"))
         && File.Exists(Path.Combine(root, "Docs", "a renamed.txt"))
         && !File.Exists(Path.Combine(root, "Docs", "a.txt"))
@@ -85,6 +93,38 @@ try
         TryRead(Path.Combine(root, "Docs", "a renamed.txt")) == "the second version of a");
     Check("an illegal portal name lands under a legal one",
         TryRead(Path.Combine(root, "Docs", "Report_ draft_.txt")) == "illegally named bytes");
+
+    // MARK: What Explorer showing a folder costs, and what the poll covers
+
+    // Navigating into a folder — it joins what Explorer shows — refreshes it once, however many
+    // ticks of the watcher say the same thing.
+    await Task.Delay(Mirror.RecentlyListed + TimeSpan.FromSeconds(1));
+    portal.AddFile(docs, "seen on a look.txt", "arrived while nobody was looking");
+    var docsListed = portal.Log.Count(entry => entry == $"list {docs}");
+    mirror.SetOpen(new[] { docsDir });
+    mirror.SetOpen(new[] { docsDir });
+    await Until("a folder Explorer navigates into is refreshed",
+        () => File.Exists(Path.Combine(docsDir, "seen on a look.txt")));
+    await Task.Delay(1000);
+    Check("once, not once per tick", portal.Log.Count(entry => entry == $"list {docs}") == docsListed + 1);
+
+    // Navigating away drops a folder out of the poll; the poll re-lists what is showing now.
+    var rootListed = portal.Log.Count(entry => entry == "list /");
+    mirror.SetOpen(new[] { root });
+    await Until("navigating up to the root refreshes the root",
+        () => portal.Log.Count(entry => entry == "list /") == rootListed + 1);
+    portal.AddFile(null, "at the root.txt", "for the poll to find");
+    portal.AddFile(docs, "not looked at.txt", "for the poll to leave");
+    var beforePoll = portal.Log.Count;
+    await mirror.SyncPass();
+    Check("the poll re-lists the folder that is showing and no other",
+        portal.Log.Count == beforePoll + 1 && portal.Log[beforePoll] == "list /"
+        && File.Exists(Path.Combine(root, "at the root.txt"))
+        && !File.Exists(Path.Combine(docsDir, "not looked at.txt")));
+    await Sync(docsDir);
+    Check("a refresh named by path brings the other one true",
+        File.Exists(Path.Combine(docsDir, "not looked at.txt")));
+    mirror.SetOpen(Array.Empty<string>());
 
     // MARK: Disk to portal, from a foreign process
 
@@ -125,7 +165,7 @@ try
 
     var refused = portal.AddFile(docs, "precious.txt", "no deleting this");
     portal.RefuseWrites = true;
-    await mirror.SyncPass();
+    await Sync(docsDir);
     Run($"del /q \"{Path.Combine(root, "Docs", "precious.txt")}\"");
     await Task.Delay(2000);
     Check("a portal refusal refuses the local delete with it",
@@ -156,15 +196,15 @@ try
     Check("a refused first upload leaves the file local-only", portal.FindByName("stranded.txt") is null);
     portal.RefuseWrites = false;
     await Task.Delay(1000);
-    await mirror.SyncPass();
-    await Until("and the next pass uploads it",
+    await Sync(docsDir);
+    await Until("and the next refresh uploads it",
         () => portal.FindByName("stranded.txt") is { } stranded
             && Placeholders.TryGetState(Path.Combine(root, "Docs", "stranded.txt"))?.Id == stranded);
 
     // Word's save: the original set aside under a working name, the new bytes renamed into its
     // place, the working copy deleted. The row has to come through it with its id and its name.
     var saved = portal.AddFile(docs, "letter.txt", "first draft");
-    await mirror.SyncPass();
+    await Sync(docsDir);
     Run($"echo second draft> \"{Path.Combine(root, "Docs", "~WRD0000.tmp")}\""
         + $" & ren \"{Path.Combine(root, "Docs", "letter.txt")}\" \"~WRL0001.tmp\""
         + $" & ren \"{Path.Combine(root, "Docs", "~WRD0000.tmp")}\" \"letter.txt\""
@@ -180,7 +220,7 @@ try
     // filter says nothing about the placeholder that goes under it — no delete, no rename — so
     // this is the watcher and the name rule alone, and the row has to come through with its id.
     var replaced = portal.AddFile(docs, "replaced.txt", "before");
-    await mirror.SyncPass();
+    await Sync(docsDir);
     Run($"echo after>\"{Path.Combine(root, "Docs", "repl.new")}\""
         + $" & move /y \"{Path.Combine(root, "Docs", "repl.new")}\" \"{Path.Combine(root, "Docs", "replaced.txt")}\"");
     await Until("a replace in one rename is a save over the row",
@@ -191,11 +231,11 @@ try
     // The row behind a name replaced by another row — trashed and re-uploaded under the same
     // name — must not go on serving the old bytes under the new id.
     var oldRow = portal.AddFile(docs, "swapped.txt", "the old bytes");
-    await mirror.SyncPass();
+    await Sync(docsDir);
     Check("the old row hydrates", TryRead(Path.Combine(root, "Docs", "swapped.txt")) == "the old bytes");
     portal.Remove(oldRow);
     var newRow = portal.AddFile(docs, "swapped.txt", "the new bytes, and longer");
-    await mirror.SyncPass();
+    await Sync(docsDir);
     Check("a row replaced under the same name re-hydrates to the new row's bytes",
         Placeholders.TryGetState(Path.Combine(root, "Docs", "swapped.txt"))?.Id == newRow
         && TryRead(Path.Combine(root, "Docs", "swapped.txt")) == "the new bytes, and longer");
@@ -203,12 +243,12 @@ try
     // A save the portal has not taken, whose row the portal then drops: the pass removes the
     // entry, and the bytes — the only copy anywhere — go aside rather than with it.
     var dropped = portal.AddFile(docs, "edited then dropped.txt", "as the portal had it");
-    await mirror.SyncPass();
+    await Sync(docsDir);
     portal.RefuseWrites = true;
     Run($"echo my edit> \"{Path.Combine(root, "Docs", "edited then dropped.txt")}\"");
     await Task.Delay(3000);
     portal.Remove(dropped);
-    await mirror.SyncPass();
+    await Sync(docsDir);
     portal.RefuseWrites = false;
     Check("a local edit the portal never took survives the portal dropping its row",
         !File.Exists(Path.Combine(root, "Docs", "edited then dropped.txt"))
@@ -219,38 +259,41 @@ try
 
     portal.AddFile(docs, "Quote A*.txt", "the first");
     portal.AddFile(docs, "Quote A?.txt", "the second");
-    await mirror.SyncPass();
+    await Sync(docsDir);
     Check("two portal names that collapse to one legal name yield one entry, not a flicker",
         File.Exists(Path.Combine(root, "Docs", "Quote A_.txt"))
         && Directory.GetFiles(Path.Combine(root, "Docs"), "Quote A*.txt").Length == 1);
 
     // A folder the portal has only declared — no row of its own — that something is finally filed
     // into. Its id changes under a name that does not, and the entry Explorer is holding has to go
-    // on resolving: the filter has already marked the directory fully populated and will never
-    // offer to list it again, so the snapshot has to follow the identity rather than be dropped.
+    // on resolving: the snapshot follows the identity rather than being dropped, so a refresh
+    // under the new id diffs against what the directory already holds.
     var declared = portal.AddFolder(null, "Compliance");
-    await mirror.SyncPass();
+    await Sync(root);
     Look(Path.Combine(root, "Compliance"));
     var written = portal.Materialise(declared);
     portal.AddFile(written, "filed at last.txt", "the first thing in it");
-    await mirror.SyncPass();
+    await Sync(root, Path.Combine(root, "Compliance"));
     Check("a declared folder that materialises keeps its contents coming",
         File.Exists(Path.Combine(root, "Compliance", "filed at last.txt")));
 
     // A snapshot that does not survive to the next run — a sign-out that left the tree, an
     // unreadable file — must not freeze a tree the filter considers fully populated. Nothing can
-    // recover what was *removed* while no snapshot existed; what must not happen is the pass
-    // deciding it has nothing to walk and never looking again.
+    // recover what was *removed* while no snapshot existed; what must not happen is a refresh
+    // with nothing to diff against doing nothing.
     await mirror.Quiesce(TimeSpan.FromSeconds(5));
     mirror.Dispose();
     SyncRoot.Disconnect(key);
     File.Delete(snapshotPath);
 
     portal.AddFile(null, "after the cold start.txt", "arrived while nothing was running");
+    var beforeRestart = portal.Log.Count;
     mirror = new Mirror(portal, root, snapshotPath);
     key = SyncRoot.Connect(root, portal, mirror);
     mirror.StartWatching();
     await mirror.SyncPass();
+    Check("nothing is showing after a restart, so the poll asks for nothing", portal.Log.Count == beforeRestart);
+    await Sync(root);
     Check("a lost snapshot re-mirrors what is on disk rather than freezing it",
         File.Exists(Path.Combine(root, "after the cold start.txt")));
 
@@ -290,7 +333,7 @@ try
     key = SyncRoot.Connect(root, portal, mirror);
     connected = true;
     mirror.StartWatching();
-    await mirror.SyncPass();
+    await Sync(root, docsDir);
     Check("the next mount takes the leftovers up as the portal's rows and fills in around them",
         Placeholders.TryGetState(leftover)?.Id == a
         && Placeholders.TryGetState(Path.Combine(root, "Docs"))?.Id == docs
@@ -307,12 +350,12 @@ try
     var docsListings = portal.Log.Count(entry => entry == $"list {docs}");
     Look(root);
     Look(root);
-    Look(Path.Combine(root, "Docs"));
-    Look(Path.Combine(root, "Docs"));
+    Look(docsDir);
+    Look(docsDir);
     Check("and a folder that already held an entry is populated once, not on every look",
         portal.Log.Count(entry => entry == "list /") <= rootListings + 1
         && portal.Log.Count(entry => entry == $"list {docs}") <= docsListings + 1
-        && Directory.GetFiles(Path.Combine(root, "Docs"), "a renamed*").Length == 1);
+        && Directory.GetFiles(docsDir, "a renamed*").Length == 1);
 
     // MARK: What a sign-out takes away, and what it must not
 
@@ -398,6 +441,14 @@ string? TryRead(string path)
 // Opening a folder, as Explorer does it: an enumeration — and from a foreign process, because
 // the filter never asks the provider to populate for the provider's own accesses.
 void Look(string directory) => Run($"dir \"{directory}\" >nul");
+
+// The poll's work, for the folders a test has changed. The poll itself re-lists only the folders
+// Explorer is showing, so a test that changed several names them — parents first, since a refresh
+// of the parent is what settles the path a child is addressed by.
+async Task Sync(params string[] directories)
+{
+    foreach (var directory in directories) await mirror.Refresh(directory);
+}
 
 void Probe(string path)
 {
