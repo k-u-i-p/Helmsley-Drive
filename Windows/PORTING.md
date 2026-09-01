@@ -133,9 +133,34 @@ one. And WebView2 will not start in a non-interactive window station — an SSH 
 sheet driven over SSH fails with `ERROR_INVALID_WINDOW_HANDLE` (0x80070578) and anything testing it
 has to run on the VM's own desktop, `schtasks /IT` being the way to put it there.
 
+**What an unmount is.** Decided (Ben, 2026-09-01): the registration may not outlive the process
+that answers for it, nor the credential it was made under. On the Mac the system launches the
+extension on demand, so a registered domain is a working one whether or not the app is up; here
+there is no extension, so a sync root standing with nobody behind it is a "Helmsley Drive" in the
+navigation pane that opens nothing and explains nothing. Three things now unmount, and all three
+run the sequence below: `AppModel.Disconnect` (Sign Out), `AppModel.Shutdown` (Quit, and only
+Quit — the close box still goes to the tray), and the poll loop's `NotAuthenticatedException`
+branch, where the portal has ended the session and the credential is already gone. `--console`
+does the same on Ctrl+C.
+
+Two consequences worth holding on to. **Ending the Windows session is not quitting**: `Program`
+watches `Application.SessionEnding` and skips the unmount entirely, because Windows allows about
+five seconds before killing the process and a tree removal cut off partway is worse than one that
+never began — the `{userstartup}` shortcut is what reconciles the registration at the next login.
+And **the snapshot goes with the tree it describes**: kept, every folder it remembers would count
+as materialised, so the next mount's first pass would eagerly recreate placeholders for a tree
+whose whole economy is that it fills in as it is browsed.
+
+The alternative — unregister but keep what has been downloaded — was rejected because re-adopting
+it is not free: `Populator` refuses any entry whose name an ordinary file already holds and then
+declines to mark the folder populated, so a kept tree comes back as orphans the drive can never
+take up again. Making that work means a `Placeholders.Convert` pass on remount, and a rule for
+telling a leftover hydrated file from a local save that never went up. Worth revisiting only if
+quitting-and-restarting turns out to cost testers a re-download they mind.
+
 **What a sign-out leaves behind.** Decided (Ben, 2026-08-31): it deletes the tree, which is what
-the Mac's domain removal amounts to. `LocalTree` does it and `AppModel.Disconnect` and
-`Program.SignOut` both run the same sequence, in an order that is the whole of why it is safe:
+the Mac's domain removal amounts to. `LocalTree` does it, and every unmount above runs the same
+sequence, in an order that is the whole of why it is safe:
 
 1. Stop the poll and drain what the engine still has in flight — but stay connected.
 2. Ask `LocalTree.LocalOnly` what the portal does not hold. This is the step with the order in it:
@@ -222,6 +247,10 @@ means running it in the background and killing it afterwards rather than waiting
 dotnet run --project App -- --console
 dotnet run --project App -- --unregister
 ```
+
+Ctrl+C on the `--console` host now unmounts rather than merely disconnecting, so a headless run
+leaves no registration and no tree behind it. `--unregister` is still the way to clear a root this
+process did not mount — one a killed run left standing, or one from an older build.
 
 In windowed mode the engine's `Console.*` narration is redirected to
 `%LOCALAPPDATA%\Helmsley Drive\app.log`, one log per run, which is where to look when Explorer

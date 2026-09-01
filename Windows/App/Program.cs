@@ -128,11 +128,22 @@ static class Program
         // is a login start, where the window is never shown at all and a drive that waited for it
         // would be a drive that never mounted.
         app.Startup += async (_, _) => await model.Startup();
+
+        // Logging off or restarting ends this process too, and WPF ends the application for it —
+        // but it is not a quit and must not be treated as one. Windows allows an app about five
+        // seconds to go and then kills it, which is nowhere near a quiesce plus the removal of a
+        // tree, so the unmount would be cut off partway through deleting files. Left alone, the
+        // registration simply outlives the session and the Startup shortcut reconciles it: the
+        // next login mounts again, and there was no moment in between with anybody at the machine.
+        var sessionEnding = false;
+        app.SessionEnding += (_, _) => sessionEnding = true;
+
         if (!Given(args, "--background")) window.Show();
         app.Run();
 
-        // After Run returns, which is after Quit: the engine outlives every close but that one.
-        model.Shutdown();
+        // After Run returns, which is after Quit: the drive comes down here and only here, since
+        // every other close is the window going to the tray with the engine still behind it.
+        if (!sessionEnding) model.Shutdown();
     }
 
     /// <summary>
@@ -178,8 +189,24 @@ static class Program
     }
 
     /// <summary>
-    /// The old console host, verbatim: sign in if needed, register, connect, then keep the mirror
-    /// true — a sync pass at start and on a timer, and the write callbacks in between — until Ctrl+C.
+    /// One root's snapshot, for an unmount that is not a sign-out: the tree it describes has gone,
+    /// and only this root's has. A second root — a probe beside the real one — keeps its own.
+    /// </summary>
+    internal static void DeleteSnapshot(string path)
+    {
+        // Deleting what is not there is not an error, so only a refusal reaches this — and a
+        // snapshot that would not go is worth a line, not a failed unmount.
+        try { File.Delete(path); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            Console.Error.WriteLine($"could not remove {path}: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// The old console host: sign in if needed, register, connect, then keep the mirror true — a
+    /// sync pass at start and on a timer, and the write callbacks in between — until Ctrl+C, which
+    /// unmounts on the way out exactly as the window's Quit does.
     /// </summary>
     static async Task RunConsole(string root, string snapshotPath)
     {
@@ -222,7 +249,8 @@ static class Program
         // first time it is looked inside, and only folders that have been looked inside are
         // re-checked by the poll.
         Console.WriteLine($"Ready. The tree fills in as it is browsed; browsed folders are re-checked every {Configuration.PollInterval.TotalMinutes:0} minutes. " +
-            "Ctrl+C disconnects (and leaves the root registered — run with --unregister to remove it).");
+            "Ctrl+C unmounts: the registration goes and the mirrored tree with it, since nothing answers for a sync root once this exits. " +
+            "The credential stays — run with --sign-out to take that too.");
 
         var quit = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; quit.Cancel(); };
@@ -243,8 +271,21 @@ static class Program
         // The local write path runs off the callbacks, so stopping the poll is not stopping the
         // engine: anything still uploading has to land before the sync root goes.
         await mirror.Quiesce(TimeSpan.FromSeconds(10));
+
+        // And then all of it, in the order AppModel.Unmount and SignOut both keep: what only
+        // exists here is identified while there is still a provider behind the sync root, and
+        // nothing is removed until the registration that would route those removals back into the
+        // engine has gone.
+        var keep = LocalTree.LocalOnly(root);
         mirror.Dispose();
         SyncRoot.Disconnect(key);
+        try { SyncRoot.Unregister(root); }
+        catch (Exception e) { Console.Error.WriteLine($"unregister failed: {e.Message}"); }
+        var keptAt = LocalTree.Discard(root, keep);
+        DeleteSnapshot(snapshotPath);
+
+        Console.WriteLine("Unmounted. The sync root is unregistered and its tree removed."
+            + (keptAt is null ? "" : $" Files the portal had not taken yet are at {keptAt}."));
     }
 
     /// <summary>

@@ -45,8 +45,9 @@ public sealed class TrayIcon : IDisposable
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add(new Forms.ToolStripMenuItem("Quit Helmsley Drive", null, (_, _) => Quit())
         {
-            ToolTipText = "Stops the drive. Files already downloaded stay where they are; "
-                + "nothing else opens until Helmsley Drive is running again.",
+            ToolTipText = "Unmounts the drive and takes it out of File Explorer — nothing here "
+                + "answers for it once this closes. You stay signed in, and it comes back the "
+                + "next time Helmsley Drive is started.",
         });
 
         _icon = new Forms.NotifyIcon { Icon = LoadIcon(), ContextMenuStrip = menu, Visible = true };
