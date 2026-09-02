@@ -63,6 +63,13 @@ public sealed class Mirror : IDisposable
     FileSystemWatcher? _watcher;
     readonly ConcurrentDictionary<string, DateTime> _touched = new(StringComparer.OrdinalIgnoreCase);
 
+    // A second watcher, for attribute changes alone, which is the only way a pin change is ever
+    // heard of: "Always keep on this device" sets an attribute and the filter says nothing. Kept
+    // apart from the first so that an attribute change is not mistaken for a write, and a write
+    // is not read for its pin state.
+    FileSystemWatcher? _attributes;
+    readonly ConcurrentDictionary<string, DateTime> _repinned = new(StringComparer.OrdinalIgnoreCase);
+
     public void StartWatching()
     {
         _watcher = new FileSystemWatcher(_root) { IncludeSubdirectories = true, InternalBufferSize = 64 * 1024 };
@@ -71,7 +78,41 @@ public sealed class Mirror : IDisposable
         _watcher.Renamed += (_, e) => _touched[e.FullPath] = DateTime.UtcNow;
         _watcher.Error += OnWatcherError;
         _watcher.EnableRaisingEvents = true;
+
+        _attributes = new FileSystemWatcher(_root)
+        {
+            IncludeSubdirectories = true,
+            InternalBufferSize = 64 * 1024,
+            NotifyFilter = NotifyFilters.Attributes,
+        };
+        _attributes.Changed += (_, e) => _repinned[e.FullPath] = DateTime.UtcNow;
+        _attributes.Error += OnAttributeWatcherError;
+        _attributes.EnableRaisingEvents = true;
+
         _ = Task.Run(DrainTouched);
+    }
+
+    /// <summary>
+    /// A pin the watcher missed is a pin nothing acts on until the user sets it again, so the
+    /// watcher is rearmed and every pinned folder that is populated is walked once, which is what
+    /// the missed events would have amounted to.
+    /// </summary>
+    void OnAttributeWatcherError(object sender, ErrorEventArgs e)
+    {
+        Console.Error.WriteLine($"attribute watcher failed ({e.GetException().Message}); rearming and walking what is pinned");
+        try
+        {
+            if (_attributes is { } watcher)
+            {
+                watcher.EnableRaisingEvents = false;
+                watcher.EnableRaisingEvents = true;
+            }
+        }
+        catch (Exception rearm)
+        {
+            Console.Error.WriteLine($"attribute watcher could not be rearmed ({rearm.Message}); pin changes will wait for a restart");
+        }
+        Spawn(_root, RevisitPinned);
     }
 
     /// <summary>
@@ -110,6 +151,13 @@ public sealed class Mirror : IDisposable
                 // on-disk state is worth reading.
                 if (DateTime.UtcNow - at < TimeSpan.FromSeconds(1.5)) continue;
                 if (_touched.TryRemove(path, out _)) Spawn(path, OnClosed);
+            }
+            foreach (var (path, at) in _repinned)
+            {
+                // Explorer pins a folder by pinning each entry under it in turn; a moment's
+                // settling lets those arrive as one look rather than one fetch per tick.
+                if (DateTime.UtcNow - at < TimeSpan.FromSeconds(0.5)) continue;
+                if (_repinned.TryRemove(path, out _)) Spawn(path, OnPinChanged);
             }
         }
     }
@@ -160,6 +208,7 @@ public sealed class Mirror : IDisposable
     {
         _stopped = true;
         if (_watcher is { } watcher) watcher.EnableRaisingEvents = false;
+        if (_attributes is { } attributes) attributes.EnableRaisingEvents = false;
 
         var deadline = Task.Delay(within);
         while (!_inFlight.IsEmpty)
@@ -178,6 +227,8 @@ public sealed class Mirror : IDisposable
         _stopped = true;
         _watcher?.Dispose();
         _watcher = null;
+        _attributes?.Dispose();
+        _attributes = null;
         // Last, and after the work has been waited for: whatever the running tasks recorded is
         // owed to disk, and the debounced writer will not get another tick.
         _snapshots.Dispose();
@@ -433,8 +484,8 @@ public sealed class Mirror : IDisposable
     //
     // What is never pruned: the root, which is no placeholder; anything Explorer shows, and its
     // ancestors, which the navigation pane holds; and anything holding bytes the portal does not
-    // have — a local create, an unsynced save — or a file pinned to stay on this device. A file
-    // somebody has open protects its folder by the handle: the delete fails on it, and the folder
+    // have — a local create, an unsynced save — or a file or folder pinned to stay on this device.
+    // A file somebody has open protects its folder by the handle: the delete fails on it, and the folder
     // is listed again at once to put back what went rather than left half empty. Not by recency
     // of use — that was tried, and the indexer and the antimalware scan open and close every
     // fresh file, which made a folder they had just been through look like one in use. What this
@@ -491,7 +542,8 @@ public sealed class Mirror : IDisposable
     }
 
     bool Prunable(string directory) =>
-        !_pruned.ContainsKey(directory) && !Shown(directory) && Idle(directory) && !HoldsAnythingToKeep(directory);
+        !_pruned.ContainsKey(directory) && !Shown(directory) && Idle(directory)
+        && Placeholders.PinOf(directory) != Placeholders.Pin.Pinned && !HoldsAnythingToKeep(directory);
 
     bool Shown(string directory) => _open.Any(open =>
         PathsEqual(open, directory)
@@ -614,6 +666,11 @@ public sealed class Mirror : IDisposable
         _snapshots.Reconcile(folderId, previous, accomplished);
 
         await UploadLocalOnly(directory, onDisk, listing).ConfigureAwait(false);
+
+        // What arrived, and what changed version and was re-dehydrated for it, is fetched again
+        // if the user keeps this folder on the device. Off the pass: the fetches are the slow part,
+        // and the pass gate is what every other refresh and the poll are waiting behind.
+        if (Placeholders.PinOf(directory) == Placeholders.Pin.Pinned) Spawn(directory, KeepPinned);
         return listing;
     }
 
@@ -944,6 +1001,162 @@ public sealed class Mirror : IDisposable
         }
     }
 
+    // MARK: - Pinning: the user's word on where the bytes live
+    //
+    // "Always keep on this device" and "Free up space" are Explorer's, and the platform's whole
+    // part in them is to record the answer as a pin state and an attribute. Fetching a pinned
+    // file is the provider's to do, and so is giving an unpinned one's bytes back — nothing
+    // happens otherwise, and a pinned file stays a tick beside an empty placeholder. Which
+    // matters beyond Explorer's tidiness: a service — a backup agent, an indexer, the process
+    // that serves a folder into Cowork's VM — is refused hydration by the platform outright
+    // (PORTING.md), and a hydrated file is the only kind such a process can read. Pinning a
+    // folder is how a user makes it readable to them.
+
+    // Fetches in flight, so that a pin heard twice — the attribute change, and the walk of the
+    // folder it sits in — is fetched once.
+    readonly ConcurrentDictionary<string, byte> _hydrating = new(StringComparer.OrdinalIgnoreCase);
+
+    // Walks in flight, one per folder: a poll and a population naming the same pinned folder in
+    // the same breath walk it once.
+    readonly ConcurrentDictionary<string, byte> _keeping = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>An attribute changed under the root. If it was the pin state, act on what it now says.</summary>
+    public async Task OnPinChanged(string path)
+    {
+        try
+        {
+            if (!IsUnderRootOrRoot(path)) return;
+            switch (Placeholders.PinOf(path))
+            {
+                case Placeholders.Pin.Pinned:
+                    if (Directory.Exists(path)) await KeepPinned(path).ConfigureAwait(false);
+                    else if (File.Exists(path)) await HydratePinned(path).ConfigureAwait(false);
+                    break;
+                case Placeholders.Pin.Unpinned:
+                    // A folder unpinned is unpinned entry by entry by Explorer, and each entry
+                    // speaks for itself; the folder's own change has nothing left to say.
+                    if (File.Exists(path)) FreeUp(path);
+                    break;
+            }
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"pin change on {path} failed: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Brings a pinned folder's contents onto the disk: every file fetched, and every entry
+    /// pinned in its own right, so that Explorer's tick and the prune's exemption read the same
+    /// for a file that arrived after the pin as for the ones the user pinned by hand. Into
+    /// populated subfolders only — an unpopulated one enumerates empty to this process, and is
+    /// walked by the populator when its first look fills it in.
+    /// </summary>
+    public async Task KeepPinned(string directory)
+    {
+        if (!_keeping.TryAdd(directory, 0)) return;
+        try
+        {
+            IEnumerable<string> entries;
+            try { entries = Directory.EnumerateFileSystemEntries(directory).ToList(); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"could not read {directory} to keep it on this device: {e.Message}");
+                return;
+            }
+            foreach (var entry in entries)
+            {
+                if (_stopped) return;
+                if (LocalNames.IsTransient(Path.GetFileName(entry))) continue;
+                try
+                {
+                    if (Placeholders.PinOf(entry) != Placeholders.Pin.Pinned && Placeholders.TryGetState(entry) is not null)
+                        Placeholders.SetPinned(entry, true);
+                }
+                catch (Exception e)
+                {
+                    Console.Error.WriteLine($"could not pin {entry} with its folder: {e.Message}");
+                }
+                if (Directory.Exists(entry)) await KeepPinned(entry).ConfigureAwait(false);
+                else await HydratePinned(entry).ConfigureAwait(false);
+            }
+        }
+        finally { _keeping.TryRemove(directory, out _); }
+    }
+
+    /// <summary>
+    /// Finds what is pinned under a folder and brings it true — a pinned folder walked, a pinned
+    /// file fetched — without pinning anything on the way, which is the difference from
+    /// <see cref="KeepPinned"/> and the reason the watcher's recovery goes through this.
+    /// </summary>
+    async Task RevisitPinned(string directory)
+    {
+        IEnumerable<string> entries;
+        try { entries = Directory.EnumerateFileSystemEntries(directory).ToList(); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return; }
+        foreach (var entry in entries)
+        {
+            if (_stopped) return;
+            var pinned = Placeholders.PinOf(entry) == Placeholders.Pin.Pinned;
+            if (Directory.Exists(entry))
+            {
+                if (pinned) await KeepPinned(entry).ConfigureAwait(false);
+                else await RevisitPinned(entry).ConfigureAwait(false);
+            }
+            else if (pinned) await HydratePinned(entry).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>One pinned file, fetched if its bytes are still in the bucket. Bounded with the uploads: a folder of thousands is a queue, not a stampede.</summary>
+    async Task HydratePinned(string path)
+    {
+        if (!LocalTree.Dehydrated(path)) return;
+        if (!_hydrating.TryAdd(path, 0)) return;
+        try
+        {
+            await _transfers.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (_stopped || !LocalTree.Dehydrated(path)) return;
+                Placeholders.Hydrate(path);
+                Console.WriteLine($"* {path} (kept on this device)");
+            }
+            finally { _transfers.Release(); }
+        }
+        catch (Exception e)
+        {
+            // Explorer's own tick stays beside an empty placeholder, so this line is where the
+            // reason survives; the next pin, or the next pass over the folder, is the retry.
+            Console.Error.WriteLine($"could not fetch {path} to keep it on this device: {e.Message}");
+        }
+        finally { _hydrating.TryRemove(path, out _); }
+    }
+
+    /// <summary>
+    /// One unpinned file, its bytes given back to the bucket — unless they are bytes the bucket
+    /// does not have. A save the portal has not taken is kept whatever the pin says, and freed
+    /// once its upload lands (<see cref="Replace"/>).
+    /// </summary>
+    void FreeUp(string path)
+    {
+        try
+        {
+            if (LocalTree.Dehydrated(path)) return;
+            if (_uploading.ContainsKey(path)) return; // Its upload frees it when it lands.
+            if (Placeholders.TryGetState(path) is not { } state) return; // No row: nothing to fetch it back from.
+            if (state.DataDirty)
+            {
+                Console.WriteLine($"* {path} is not freed up: it holds a save the portal has not taken");
+                return;
+            }
+            if (Placeholders.Dehydrate(path)) Console.WriteLine($"* {path} (freed up)");
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"could not free up {path}: {e.Message}");
+        }
+    }
+
     // MARK: - Disk to portal
 
     /// <summary>
@@ -1030,6 +1243,11 @@ public sealed class Mirror : IDisposable
             // Leaving is the same atomic step in reverse: the claim goes only if nothing has
             // marked it since the top of this iteration, and a mark found here is another turn.
             while (!_uploading.TryRemove(new KeyValuePair<string, bool>(path, false)));
+
+            // "Free up space" on a file holding a save was refused for as long as the save was
+            // the only copy. Now it is not, and the user's word stands. After the claim is down,
+            // because FreeUp reads a standing claim as "its upload frees it", which is this.
+            if (Placeholders.PinOf(path) == Placeholders.Pin.Unpinned) FreeUp(path);
         }
         catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException
             || (e is System.Runtime.InteropServices.COMException

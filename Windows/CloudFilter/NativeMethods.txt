@@ -10,3 +10,6 @@ CfGetPlaceholderInfo
 CfUpdatePlaceholder
 CfConvertToPlaceholder
 CfSetInSyncState
+CfHydratePlaceholder
+CfDehydratePlaceholder
+CfSetPinState

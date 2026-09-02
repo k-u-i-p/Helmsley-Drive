@@ -155,7 +155,14 @@ public static unsafe class Placeholders
     public static bool Update(string path, RemoteItem item, bool dehydrate)
     {
         var applied = false;
-        SharingRetries(() => applied = UpdateOnce(path, item, dehydrate));
+        // A pinned placeholder will not give its bytes up (ERROR_CLOUD_FILE_PINNED), and a changed
+        // version has to drop them all the same: they are not the portal's any more. The pin is
+        // lifted for the update and put straight back, and it is the pin going back on — an
+        // attribute change, which Mirror hears — that fetches the new bytes.
+        var pinned = dehydrate && !item.IsFolder && PinOf(path) == Pin.Pinned;
+        if (pinned) SetPinned(path, false);
+        try { SharingRetries(() => applied = UpdateOnce(path, item, dehydrate)); }
+        finally { if (pinned) SetPinned(path, true); }
         return applied;
     }
 
@@ -243,6 +250,90 @@ public static unsafe class Placeholders
         }
     }
 
+    // MARK: - Pin state: the user's word on where the bytes should be
+    //
+    // "Always keep on this device" and "Free up space" in Explorer, or attrib +P / +U from a
+    // console, set a pin state on the placeholder — and nothing more. The platform does not fetch
+    // a pinned file or drop an unpinned one; it records the intent, as two file attributes, and
+    // the provider is expected to act on it. Which is what Mirror does, through these.
+
+    /// <summary>What the user has said about an entry's bytes, read off its attributes: no handle, no filter call.</summary>
+    public enum Pin { Unspecified, Pinned, Unpinned }
+
+    // FILE_ATTRIBUTE_PINNED and FILE_ATTRIBUTE_UNPINNED, which the platform keeps in step with the
+    // placeholder's pin state. Not among the FileAttributes .NET names.
+    const FileAttributes AttributePinned = (FileAttributes)0x00080000;
+    const FileAttributes AttributeUnpinned = (FileAttributes)0x00100000;
+
+    public static Pin PinOf(string path)
+    {
+        try
+        {
+            var attributes = File.GetAttributes(path);
+            if ((attributes & AttributePinned) != 0) return Pin.Pinned;
+            if ((attributes & AttributeUnpinned) != 0) return Pin.Unpinned;
+            return Pin.Unspecified;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return Pin.Unspecified;
+        }
+    }
+
+    /// <summary>
+    /// Says of an entry what the user said of its folder: a file arriving in a pinned folder is
+    /// pinned itself, so Explorer's tick and the prune's exemption both read the same way for it
+    /// as for the ones the user pinned by hand.
+    /// </summary>
+    public static void SetPinned(string path, bool pinned) => SharingRetries(() =>
+    {
+        using var handle = ProtectedHandle.Open(path, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_WRITE_ACCESS);
+        PInvoke.CfSetPinState(handle.Win32Handle,
+            pinned ? CF_PIN_STATE.CF_PIN_STATE_PINNED : CF_PIN_STATE.CF_PIN_STATE_UNSPECIFIED,
+            CF_SET_PIN_FLAGS.CF_SET_PIN_FLAG_NONE, null).ThrowOnFailure();
+    });
+
+    /// <summary>
+    /// Fetches a placeholder's bytes in full, from this process: the platform routes the request
+    /// to the provider's own FETCH_DATA callback exactly as it would a foreign read, so this is
+    /// <see cref="Hydrator"/> at work, asked for by the provider rather than by a user's open.
+    /// A plain read handle, not an oplocked one: the call wants only READ_DATA of it, and nothing
+    /// here is changed under the caller that an oplock would be guarding.
+    /// </summary>
+    public static void Hydrate(string path) => SharingRetries(() =>
+    {
+        using var file = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        PInvoke.CfHydratePlaceholder((HANDLE)file.SafeFileHandle.DangerousGetHandle(), 0, -1,
+            CF_HYDRATE_FLAGS.CF_HYDRATE_FLAG_NONE, null).ThrowOnFailure();
+    });
+
+    /// <summary>
+    /// Drops a placeholder's bytes back to the bucket, which is what "Free up space" asks for.
+    /// Under the exclusive handle the platform documents for it and does not check, and never for
+    /// a placeholder holding a save the portal has not taken: those bytes exist nowhere else, and
+    /// the call answers false rather than lose them. In-sync is set first where only metadata
+    /// motion has cleared it — a rename does, under TRACK_ALL — because the platform refuses to
+    /// dehydrate an out-of-sync placeholder however clean its bytes are.
+    /// </summary>
+    public static bool Dehydrate(string path)
+    {
+        var freed = false;
+        SharingRetries(() =>
+        {
+            using var handle = ProtectedHandle.Open(path,
+                CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_EXCLUSIVE | CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_WRITE_ACCESS);
+            var state = ReadState(handle);
+            if (state.DataDirty) return;
+            if (!state.InSync)
+                PInvoke.CfSetInSyncState(handle.Win32Handle, CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC,
+                    CF_SET_IN_SYNC_FLAGS.CF_SET_IN_SYNC_FLAG_NONE, null).ThrowOnFailure();
+            PInvoke.CfDehydratePlaceholder(handle.Win32Handle, 0, -1,
+                CF_DEHYDRATE_FLAGS.CF_DEHYDRATE_FLAG_NONE, null).ThrowOnFailure();
+            freed = true;
+        });
+        return freed;
+    }
+
     /// <summary>What a completed upload of local bytes earns the placeholder that held them.</summary>
     public static void MarkInSync(string path) => SharingRetries(() =>
     {
@@ -290,8 +381,7 @@ public static unsafe class Placeholders
 
         var modified = *(long*)(buffer + 16);
         // "Always keep on this device", which the user asked for and a prune must honour.
-        // CF_PIN_STATE_PINNED is 1 in cfapi.h; the enum itself is not among what CsWin32 projects.
-        var pinned = *(int*)(buffer + 32) == 1;
+        var pinned = *(int*)(buffer + 32) == (int)CF_PIN_STATE.CF_PIN_STATE_PINNED;
         var inSync = *(int*)(buffer + 36) == (int)CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC;
         // Clamped against what was actually written rather than trusted: the length is a field
         // inside the buffer being described, and reading past the buffer on its word is how a

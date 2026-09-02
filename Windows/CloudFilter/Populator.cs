@@ -114,6 +114,13 @@ public static unsafe class Populator
             // and a row left out of it would be met next time as something that just appeared.
             Mirror?.NoteListed(folderId, directory, listing);
             Console.WriteLine($"= {folderId ?? "/"} populated ({listing.Count} entries)");
+
+            // A folder the user keeps on this device gets its new entries fetched, not merely
+            // named. Off this thread: the fetches come back through FETCH_DATA, and a callback
+            // that waits on another callback is the deadlock the platform's timeout turns into
+            // a dead drive.
+            if (Placeholders.PinOf(directory) == Placeholders.Pin.Pinned && Mirror is { } mirror)
+                mirror.Spawn(directory, mirror.KeepPinned);
         }
         catch (Exception e) { Callbacks.Fell("fetch-placeholders", e); }
     }

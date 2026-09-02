@@ -200,6 +200,67 @@ try
         && File.Exists(Path.Combine(docsDir, "kept back.txt")));
     Mirror.PruneAfter = TimeSpan.FromDays(1);
 
+    // MARK: Always keep on this device
+
+    // A pin is an attribute the platform records and does nothing about: fetching a pinned file
+    // is the provider's to do. Set from a foreign process with attrib, as Explorer's menu sets
+    // it, because the attribute watcher is what hears it and a self-inflicted one proves less.
+    var pinnedFile = Path.Combine(docsDir, "seen on a look.txt");
+    var pinnedId = portal.FindByName("seen on a look.txt")!;
+    Check("a fresh placeholder holds no bytes", LocalTree.Dehydrated(pinnedFile));
+    Run($"attrib +P \"{pinnedFile}\"");
+    await Until("a file pinned from a foreign process is fetched", () => !LocalTree.Dehydrated(pinnedFile));
+    Check("and holds the portal's bytes", TryRead(pinnedFile) == "arrived while nobody was looking");
+
+    // A pinned folder: everything in it fetched, each entry pinned in its own right, and what
+    // arrives or changes later fetched on arrival rather than left as a tick beside nothing.
+    Run($"attrib +P \"{docsDir}\"");
+    await Until("a pinned folder fetches everything in it",
+        () => Directory.EnumerateFiles(docsDir).All(f => !LocalTree.Dehydrated(f)));
+    Check("and pins each entry, so Explorer says so of each",
+        Directory.EnumerateFiles(docsDir).All(f => Placeholders.PinOf(f) == Placeholders.Pin.Pinned));
+    portal.AddFile(docs, "arrives pinned.txt", "fetched on arrival");
+    await Sync(docsDir);
+    await Until("a file arriving in a pinned folder is fetched on arrival",
+        () => !LocalTree.Dehydrated(Path.Combine(docsDir, "arrives pinned.txt"))
+            && Placeholders.PinOf(Path.Combine(docsDir, "arrives pinned.txt")) == Placeholders.Pin.Pinned);
+    portal.ReplaceBytes(pinnedId, "a newer version, fetched again");
+    await Sync(docsDir);
+    await Until("a pinned file whose bytes changed is fetched again",
+        () => !LocalTree.Dehydrated(pinnedFile) && TryRead(pinnedFile) == "a newer version, fetched again");
+
+    Mirror.PruneAfter = TimeSpan.FromSeconds(3);
+    await Task.Delay(Mirror.PruneAfter + TimeSpan.FromSeconds(1));
+    mirror.SetOpen(Array.Empty<string>());
+    await mirror.SyncPass();
+    Check("a pinned folder is not pruned, however idle",
+        File.Exists(pinnedFile) && !LocalTree.Dehydrated(pinnedFile));
+    Mirror.PruneAfter = TimeSpan.FromDays(1);
+
+    // Free up space: the bytes go back to the bucket — unless they are a save the portal has not
+    // taken, which is kept until it has, and freed then.
+    Run($"attrib -P +U \"{pinnedFile}\"");
+    await Until("a file unpinned from a foreign process gives its bytes back", () => LocalTree.Dehydrated(pinnedFile));
+    Check("and is still the portal's row", Placeholders.TryGetState(pinnedFile)?.Id == pinnedId);
+
+    var keptBack = Path.Combine(docsDir, "kept back.txt");
+    portal.RefuseWrites = true;
+    Run($"echo edited here>> \"{keptBack}\"");
+    await Until("an appended save leaves the placeholder standing, out of sync",
+        () => Placeholders.TryGetState(keptBack) is { DataDirty: true });
+    Run($"attrib -P +U \"{keptBack}\"");
+    await Task.Delay(2000);
+    Check("a save the portal has not taken is not freed up for an unpin",
+        !LocalTree.Dehydrated(keptBack) && (TryRead(keptBack) ?? "").Contains("edited here"));
+    portal.RefuseWrites = false;
+    await Sync(docsDir);
+    await Until("and is freed once the save has gone up",
+        () => portal.ContentOf(portal.FindByName("kept back.txt")!).Contains("edited here") && LocalTree.Dehydrated(keptBack));
+
+    // The sections after this one meet Docs as an ordinary folder.
+    Run($"attrib -P -U \"{docsDir}\" & attrib -P -U \"{Path.Combine(docsDir, "*")}\"");
+    await Task.Delay(1000);
+
     // MARK: Disk to portal, from a foreign process
 
     Run($"echo fresh local bytes> \"{Path.Combine(root, "Docs", "fresh.txt")}\"");

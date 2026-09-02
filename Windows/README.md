@@ -49,6 +49,14 @@ it registers `%USERPROFILE%\Helmsley Drive` as a sync root and mirrors the porta
 as the app is running. The engine's narration goes to `%LOCALAPPDATA%\Helmsley Drive\app.log`, one
 log per run.
 
+"Always keep on this device" on a file or folder, from Explorer's menu, fetches it and keeps it
+fetched — what arrives in a pinned folder later is fetched on arrival, and a pinned folder is
+never emptied by the idle prune. "Free up space" gives the bytes back, except for a save the
+portal has not taken yet, which is freed once it has. Beyond the convenience, this is how a
+folder is made readable to a program the platform will not fetch for: services and anything
+else outside the user's own session, the process behind Claude Cowork's folder mount included,
+are refused an unfetched file outright, and a fetched one is the only kind they can read.
+
 Closing the window does not stop it. There is no extension process on Windows — the engine is in
 this process — so the window closes to a notification-area icon, and Quit, from that icon's menu,
 is the one thing that takes the drive down. It takes all of it: the registration goes and the

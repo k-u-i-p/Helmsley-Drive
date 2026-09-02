@@ -395,6 +395,26 @@ next person believes the code.
   directory handles either, which is why "what is Explorer showing" is asked of the shell and not
   of the filter.
 
+- **A pin is the user's word, and acting on it is the provider's job.** "Always keep on this
+  device" and "Free up space" — and `attrib +P` / `+U` — set a pin state on the placeholder and an
+  attribute beside it, and the platform does nothing else: it does not fetch a pinned file or drop
+  an unpinned one. Nor does the filter say a word about it; the change arrives only as an
+  attribute change, which is why `Mirror` runs a second `FileSystemWatcher` on attributes alone
+  and acts on what `Placeholders.PinOf` then reads. A pinned file is hydrated from the provider's
+  own process (`CfHydratePlaceholder`, which comes back through the same FETCH_DATA as a user's
+  open); a pinned folder is walked, each entry pinned in its own right and fetched, and the
+  populator and the refresh walk it again for what arrives later. An unpinned file is dehydrated
+  under the exclusive handle the platform documents — never while it holds a save the portal has
+  not taken, which is freed once its upload lands. A pinned folder is never pruned. Decided (Ben,
+  2026-09-02), and for a reason beyond Explorer's tidiness: the platform refuses hydration to a
+  session-0 caller whose executable is outside the Windows directory — it answers
+  `STATUS_CLOUD_FILE_ACCESS_DENIED` without ever asking the provider — and that is what a backup
+  agent, an indexer, and the process that serves a folder into Cowork's Hyper-V VM all are. A
+  hydrated placeholder is the only kind such a process can read, so pinning a folder is how a
+  user makes it readable to them. (Microsoft acknowledged the restriction on Q&A in 2022 and has
+  not lifted it.) Not verified in the harness at the time of writing: the VM was down — the pin
+  section is written and unrun.
+
 - **Notifications are not the platform's only opinion about scope.** `CF_CALLBACK_RENAME_FLAG_
   SOURCE_IN_SCOPE` and `_TARGET_IN_SCOPE` say whether each end of a rename is inside the sync root,
   already normalised — short names expanded, mount points resolved. A prefix test on the path agrees
