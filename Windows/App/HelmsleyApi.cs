@@ -267,6 +267,31 @@ public sealed class HelmsleyApi
     })
     { Timeout = Timeout.InfiniteTimeSpan };
 
+    static HelmsleyApi()
+    {
+        // HttpClient sends no User-Agent unless told to, and the portal's request log showed the
+        // Windows drive as a dash beside the Mac's CFNetwork line — indistinguishable from any
+        // other client, and from behind one router indistinguishable from the Mac. The version is
+        // the one the build was stamped with, so a tester's build can be told from another.
+        Http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent",
+            $"HelmsleyDrive-Windows/{AppVersion} Windows/{Environment.OSVersion.Version}");
+    }
+
+    /// <summary>The version the executable was stamped with — <c>0.5.0</c>, not <c>0.5.0.0</c> and not a commit hash after a plus.</summary>
+    static string AppVersion
+    {
+        get
+        {
+            var assembly = typeof(HelmsleyApi).Assembly;
+            var informational = assembly
+                .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+                .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+                .FirstOrDefault()?.InformationalVersion;
+            if (!string.IsNullOrEmpty(informational)) return informational.Split('+')[0];
+            return assembly.GetName().Version?.ToString(3) ?? "0";
+        }
+    }
+
     /// <summary>
     /// How long anything that answers in JSON may take, headers and body together. Under the
     /// sixty seconds the filter allows a held rename or delete, so a portal that has stopped

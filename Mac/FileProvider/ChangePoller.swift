@@ -256,7 +256,10 @@ actor ChangePoller {
                 }
             }
         } catch {
-            Log.enumeration.debug("listing \(together.count) folders together failed: \(error.localizedDescription, privacy: .public)")
+            // Error, not debug, and deliberately without a fallback: a portal that refuses the
+            // batch is a portal that has not been deployed, and that should be seen, not papered
+            // over by listing the folders one at a time.
+            Log.enumeration.error("listing \(together.count) folders together failed: \(error.localizedDescription, privacy: .public)")
         }
         return listings
     }

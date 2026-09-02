@@ -296,6 +296,7 @@ struct HelmsleyAPI: Sendable {
     func downloadContents(id: String, reporting parent: Progress? = nil) async throws -> URL {
         let (url, response) = try await withToken { token in
             var request = URLRequest(url: documentURL(id).appendingPathComponent("content"))
+            request.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             let (url, response) = try await Transport.download(request, reporting: parent)
             // A refusal that is about to be retried leaves a file behind that nobody else will see.
@@ -521,9 +522,28 @@ struct HelmsleyAPI: Sendable {
         return try await send(request)
     }
 
+    /// What every request says it is. CFNetwork's default names the bundle's executable and build
+    /// number — "HelmsleyFileProvider/1" — which is the same for every build ever made, so the
+    /// portal's request log could not tell one tester's build from another. This says the product,
+    /// its version, which process is asking, and the OS.
+    static let userAgent: String = {
+        let bundle = Bundle.main
+        let version = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+        let build = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+        let process = bundle.bundleIdentifier?.split(separator: ".").last.map(String.init) ?? "unknown"
+        let os = ProcessInfo.processInfo.operatingSystemVersion
+        #if os(iOS)
+        let platform = "iOS"
+        #else
+        let platform = "macOS"
+        #endif
+        return "HelmsleyDrive-\(platform)/\(version) (\(build); \(process)) \(platform)/\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
+    }()
+
     private func send<T: Decodable>(_ request: URLRequest) async throws -> T {
         let (data, response) = try await withToken { token in
             var authorised = request
+            authorised.setValue(Self.userAgent, forHTTPHeaderField: "User-Agent")
             authorised.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             return try await URLSession.shared.data(for: authorised, delegate: Transport.sanitiser)
         }
