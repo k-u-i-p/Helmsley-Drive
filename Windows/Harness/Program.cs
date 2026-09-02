@@ -157,14 +157,20 @@ try
 
     // A file somebody has open will not delete, so its folder will not empty — and is put back
     // whole rather than left half empty: whatever went before the held one is listed straight back.
+    // Held with read sharing, as an editor holds a document, so the placeholder's state can still
+    // be read and it is the delete that refuses; held with none, the state read refuses first and
+    // the folder is kept without a delete being tried, which is the other, quieter way through.
     var docsEntries = Directory.GetFileSystemEntries(docsDir).Length;
-    using (File.Open(Path.Combine(docsDir, "a renamed.txt"), FileMode.Open, FileAccess.Read, FileShare.None))
+    var pruneRefusals = portal.Log.Count(entry => entry == $"list {docs}");
+    using (File.Open(Path.Combine(docsDir, "a renamed.txt"), FileMode.Open, FileAccess.Read, FileShare.Read))
     {
         mirror.SetOpen(Array.Empty<string>());
         await mirror.SyncPass();
     }
     Check("a folder with a file held open is not pruned, and is put back whole",
         Directory.GetFileSystemEntries(docsDir).Length == docsEntries && File.Exists(Path.Combine(docsDir, "a renamed.txt")));
+    Check("by a listing made the moment the emptying was refused",
+        portal.Log.Count(entry => entry == $"list {docs}") == pruneRefusals + 1);
 
     await Task.Delay(Mirror.PruneAfter + TimeSpan.FromSeconds(1));
     mirror.SetOpen(new[] { docsDir });
