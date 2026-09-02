@@ -350,7 +350,8 @@ next person believes the code.
   folder's snapshot. That is the only look the filter ever reports: the transfer marks the directory
   fully populated, and from then on what keeps it true is a refresh (`Mirror.Refresh`) of the
   folders Explorer is showing — `ExplorerWatch` in the app asks the shell's `Windows()` collection
-  every two seconds, a folder newly shown is refreshed at once (`Mirror.SetOpen`), and the poll
+  every second, a folder a window has newly navigated into is refreshed at once (`Mirror.SetOpen`,
+  judged per window, so up-and-back counts and a tab switch does not), and the poll
   (`Mirror.SyncPass`) re-lists the ones still showing. Decided (Ben, 2026-09-02): the pass before
   this re-listed every folder ever opened, breadth-first from the root, on every tick — one request
   per folder of the admin's whole history, which does not scale. The portal answers for what is on

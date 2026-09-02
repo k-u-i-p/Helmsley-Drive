@@ -215,39 +215,51 @@ public sealed class Mirror : IDisposable
 
     // When each folder was last listed, by whichever route. A folder that becomes open just
     // after its population — which is the ordinary way a folder is first shown — is not listed
-    // twice for it, and the watcher's ticks are not a listing each.
+    // twice for it. Two seconds is that and no more: a folder navigated out of and back into is
+    // a folder the user wants looked at again, and a longer window was measured to swallow it.
     readonly ConcurrentDictionary<string, DateTime> _listedAt = new(StringComparer.OrdinalIgnoreCase);
-    public static TimeSpan RecentlyListed { get; set; } = TimeSpan.FromSeconds(10);
+    public static TimeSpan RecentlyListed { get; set; } = TimeSpan.FromSeconds(2);
 
     /// <summary>
-    /// What is showing now. A folder that was not showing a moment ago has just been navigated
-    /// into, and is refreshed in the background — parents before children, so a rename of the
-    /// parent has settled the child's path first — unless it was listed moments ago. Folders no
-    /// longer showing simply drop out of the poll.
+    /// What is showing now, and which of it was just navigated into. A folder that was not
+    /// showing a moment ago counts as navigated into whether or not the teller says so — that
+    /// is all a teller without windows to watch (the harness) can say — and a folder the teller
+    /// names is refreshed even if it was showing already, which is how going up and coming back
+    /// to a folder another window still shows gets its listing. Refreshes run in the background,
+    /// parents before children, so a rename of the parent has settled the child's path first,
+    /// and a folder listed moments ago is skipped. Folders no longer showing drop out of the poll.
     /// </summary>
-    public void SetOpen(IEnumerable<string> directories)
+    public void SetOpen(IEnumerable<string> directories, IEnumerable<string>? navigatedInto = null)
     {
         var was = _open;
-        var now = directories
-            .Select(d => Path.TrimEndingDirectorySeparator(Path.GetFullPath(d)))
-            .Where(IsUnderRootOrRoot)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var now = Normalised(directories);
         _open = now;
 
         var fresh = now
             .Where(d => !was.Contains(d, StringComparer.OrdinalIgnoreCase))
+            .Concat(navigatedInto is null ? Array.Empty<string>() : Normalised(navigatedInto))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .Where(d => !_listedAt.TryGetValue(d, out var at) || DateTime.UtcNow - at >= RecentlyListed)
             .OrderBy(Depth)
             .ToList();
         if (fresh.Count == 0) return;
         // Claimed before the work starts, so the next tell does not queue the same listing again.
-        foreach (var d in fresh) _listedAt[d] = DateTime.UtcNow;
+        foreach (var d in fresh)
+        {
+            _listedAt[d] = DateTime.UtcNow;
+            Console.WriteLine($"@ {d} (navigated into)");
+        }
         Spawn(fresh[0], async _ =>
         {
             foreach (var d in fresh) await Refresh(d).ConfigureAwait(false);
         });
     }
+
+    List<string> Normalised(IEnumerable<string> directories) => directories
+        .Select(d => Path.TrimEndingDirectorySeparator(Path.GetFullPath(d)))
+        .Where(IsUnderRootOrRoot)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToList();
 
     /// <summary>The populator's listing, for a folder looked into for the first time: its snapshot from then on, and its latest listing.</summary>
     public void NoteListed(string? folderId, string directory, IReadOnlyList<RemoteItem> items)
@@ -282,18 +294,41 @@ public sealed class Mirror : IDisposable
         else Console.Error.WriteLine($"{directory} carries no row identity; a refresh of its parent is what gives it one");
     }
 
+    // Refreshes in flight, by directory. Never two of the same folder at once, and never two
+    // back to back for one moment's asking: a second ask while one runs — the poll and a
+    // navigation naming the same folder in the same breath, two ticks of the watcher — joins the
+    // running one and returns when it does. The pass gate below then keeps refreshes of different
+    // folders from running over each other.
+    readonly ConcurrentDictionary<string, Task> _refreshing = new(StringComparer.OrdinalIgnoreCase);
+
     async Task Refresh(string? folderId, string directory)
     {
-        await _pass.WaitAsync().ConfigureAwait(false);
+        var mine = new TaskCompletionSource();
+        var running = _refreshing.GetOrAdd(directory, mine.Task);
+        if (running != mine.Task)
+        {
+            await running.ConfigureAwait(false);
+            return;
+        }
         try
         {
-            // Renamed or removed by a refresh of its parent since it was opened. Explorer follows
-            // the rename, and the next tell names the folder as it is now.
-            if (!Directory.Exists(directory)) return;
-            if (await RefreshFolder(folderId, directory).ConfigureAwait(false) is not null)
-                _listedAt[directory] = DateTime.UtcNow;
+            await _pass.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                // Renamed or removed by a refresh of its parent since it was opened. Explorer
+                // follows the rename, and the next tell names the folder as it is now.
+                if (!Directory.Exists(directory)) return;
+                if (await RefreshFolder(folderId, directory).ConfigureAwait(false) is not null)
+                    _listedAt[directory] = DateTime.UtcNow;
+            }
+            finally { _pass.Release(); }
         }
-        finally { _pass.Release(); }
+        finally
+        {
+            _refreshing.TryRemove(directory, out _);
+            // Joiners are released whatever happened here; a fault is the asker's to hear.
+            mine.SetResult();
+        }
     }
 
     bool IsUnderRootOrRoot(string path) => PathsEqual(path, _root) || IsUnderRoot(path);

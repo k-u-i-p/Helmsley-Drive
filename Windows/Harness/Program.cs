@@ -108,6 +108,25 @@ try
     await Task.Delay(1000);
     Check("once, not once per tick", portal.Log.Count(entry => entry == $"list {docs}") == docsListed + 1);
 
+    // Going up and coming back to a folder that never left the set — another window still shows
+    // it, or the round trip fell between two ticks — is a navigation the watcher names, and
+    // it is listed again for it.
+    await Task.Delay(Mirror.RecentlyListed + TimeSpan.FromSeconds(1));
+    portal.AddFile(docs, "seen on the way back.txt", "arrived while the user was upstairs");
+    mirror.SetOpen(new[] { docsDir }, navigatedInto: new[] { docsDir });
+    await Until("navigating back into a folder still showing refreshes it",
+        () => File.Exists(Path.Combine(docsDir, "seen on the way back.txt")));
+
+    // Two asks for the same folder in the same breath — the poll and a navigation, two ticks —
+    // are one listing: the second joins the first rather than running beside or behind it.
+    await Task.Delay(Mirror.RecentlyListed + TimeSpan.FromSeconds(1));
+    portal.ListDelayMs = 500;
+    var docsListedBefore = portal.Log.Count(entry => entry == $"list {docs}");
+    await Task.WhenAll(mirror.Refresh(docsDir), mirror.Refresh(docsDir), mirror.Refresh(docsDir));
+    portal.ListDelayMs = 0;
+    Check("three refreshes of one folder at once are one listing",
+        portal.Log.Count(entry => entry == $"list {docs}") == docsListedBefore + 1);
+
     // Navigating away drops a folder out of the poll; the poll re-lists what is showing now.
     var rootListed = portal.Log.Count(entry => entry == "list /");
     mirror.SetOpen(new[] { root });
@@ -493,6 +512,9 @@ sealed class FakePortal : IRemoteStore
     volatile bool _refuseWrites;
     public bool RefuseWrites { get => _refuseWrites; set => _refuseWrites = value; }
 
+    /// <summary>A slow portal, for tests about what happens while a listing is still in the air.</summary>
+    public volatile int ListDelayMs;
+
     sealed class NotFoundException : Exception;
     sealed class RefusedException() : Exception("the portal said no");
 
@@ -548,13 +570,13 @@ sealed class FakePortal : IRemoteStore
 
     // MARK: IRemoteStore
 
-    public Task<IReadOnlyList<RemoteItem>> List(string? folderId)
+    public async Task<IReadOnlyList<RemoteItem>> List(string? folderId)
     {
+        if (ListDelayMs > 0) await Task.Delay(ListDelayMs);
         lock (_lock)
         {
             _log.Add($"list {folderId ?? "/"}");
-            return Task.FromResult<IReadOnlyList<RemoteItem>>(
-                _nodes.Values.Where(n => n.ParentId == folderId && !n.Trashed).Select(Item).ToList());
+            return _nodes.Values.Where(n => n.ParentId == folderId && !n.Trashed).Select(Item).ToList();
         }
     }
 

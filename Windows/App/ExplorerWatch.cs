@@ -4,9 +4,15 @@ using HelmsleyDrive.CloudFilter;
 namespace HelmsleyDrive.App;
 
 /// <summary>
-/// Which folders of the drive Explorer is showing, asked of the shell every couple of seconds
-/// and told to the mirror, which refreshes a folder the moment it is navigated into and, on the
-/// poll, re-lists only the ones still showing.
+/// Which folders of the drive Explorer is showing, asked of the shell every second and told to
+/// the mirror, which refreshes a folder the moment it is navigated into and, on the poll,
+/// re-lists only the ones still showing.
+///
+/// Navigation is read per window: each window's folders this tick against the same window's
+/// folders last tick, so going up and coming back down is a navigation even while another window
+/// still shows the folder, and a tab switch — the tabs of one window share its handle and are all
+/// listed at once — is not. Judged against the whole set instead, a folder that never left it was
+/// never entered, which is how the first cut missed exactly the gesture a user makes to look again.
 ///
 /// The shell is asked rather than the filter because the filter cannot say. A directory is
 /// populated once, and from then on the filter marks it fully populated and never asks about it
@@ -22,13 +28,18 @@ namespace HelmsleyDrive.App;
 /// </summary>
 public sealed class ExplorerWatch : IDisposable
 {
-    static readonly TimeSpan Tick = TimeSpan.FromSeconds(2);
+    static readonly TimeSpan Tick = TimeSpan.FromSeconds(1);
 
     readonly string _root;
     readonly Mirror _mirror;
     readonly CancellationTokenSource _stopping = new();
     Thread? _thread;
     bool _complained;
+    bool _greeted;
+
+    // What each window (by handle) showed last tick. A window that has gone drops out; a new one
+    // is a navigation into everything it shows.
+    Dictionary<long, HashSet<string>> _shownByWindow = new();
 
     public ExplorerWatch(string root, Mirror mirror)
     {
@@ -53,7 +64,19 @@ public sealed class ExplorerWatch : IDisposable
         var quit = _stopping.Token;
         while (!quit.IsCancellationRequested)
         {
-            try { _mirror.SetOpen(FoldersShown()); }
+            try
+            {
+                var shown = FoldersShown();
+                if (!_greeted) { Console.WriteLine("watching Explorer"); _greeted = true; }
+                var navigated = new List<string>();
+                foreach (var (window, folders) in shown)
+                {
+                    _shownByWindow.TryGetValue(window, out var before);
+                    navigated.AddRange(folders.Where(f => before is null || !before.Contains(f)));
+                }
+                _shownByWindow = shown;
+                _mirror.SetOpen(shown.Values.SelectMany(f => f), navigated);
+            }
             catch (Exception e)
             {
                 if (!_complained)
@@ -65,13 +88,14 @@ public sealed class ExplorerWatch : IDisposable
     }
 
     /// <summary>
-    /// The folders under the root that Explorer windows are showing right now. Anything the shell
-    /// shows that is not a folder of the drive — This PC, a library, a search — is left out, and
-    /// a window that closes mid-enumeration is skipped rather than allowed to fail the tick.
+    /// The folders under the root that Explorer windows are showing right now, by window handle.
+    /// Anything the shell shows that is not a folder of the drive — This PC, a library, a search —
+    /// is left out, and a window that closes mid-enumeration is skipped rather than allowed to
+    /// fail the tick. A window whose handle cannot be read goes under handle zero.
     /// </summary>
-    List<string> FoldersShown()
+    Dictionary<long, HashSet<string>> FoldersShown()
     {
-        var shown = new List<string>();
+        var shown = new Dictionary<long, HashSet<string>>();
         var type = Type.GetTypeFromProgID("Shell.Application")
             ?? throw new InvalidOperationException("Shell.Application is not registered");
         dynamic shell = Activator.CreateInstance(type)!;
@@ -90,8 +114,13 @@ public sealed class ExplorerWatch : IDisposable
                         if (window is null) continue;
                         string? url = window.LocationURL;
                         if (string.IsNullOrEmpty(url)) continue;
-                        if (UnderRoot(url) is { } folder && !shown.Contains(folder, StringComparer.OrdinalIgnoreCase))
-                            shown.Add(folder);
+                        if (UnderRoot(url) is not { } folder) continue;
+                        long handle;
+                        try { handle = (long)window.HWND; }
+                        catch (Exception) { handle = 0; }
+                        if (!shown.TryGetValue(handle, out var folders))
+                            shown[handle] = folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        folders.Add(folder);
                     }
                     catch (COMException) { }
                     finally { if (window is not null) Marshal.FinalReleaseComObject(window); }
