@@ -154,13 +154,16 @@ struct Admin: Codable, Sendable {
 enum APIError: LocalizedError {
     case http(status: Int, message: String)
     case malformedResponse
-    case uploadRejected(status: Int)
+    /// Cloud Storage said no, not the portal — to the PUT of an upload, or to the GET a download
+    /// was redirected into. Kept apart from `http` because the two mean different things to the
+    /// file provider: see `isRefusal`.
+    case bucketRefused(status: Int)
 
     var errorDescription: String? {
         switch self {
         case .http(let status, let message): return message.isEmpty ? "The server returned HTTP \(status)." : message
         case .malformedResponse: return "The server sent a response this app could not read."
-        case .uploadRejected(let status): return "Cloud Storage refused the upload (HTTP \(status))."
+        case .bucketRefused(let status): return "Cloud Storage refused the transfer (HTTP \(status))."
         }
     }
 
@@ -170,6 +173,46 @@ enum APIError: LocalizedError {
         if case .http(let status, _) = self { return status == 404 }
         return false
     }
+
+    /// Whether the portal has refused this outright, as distinct from failing to answer it.
+    ///
+    /// A 4xx from the portal is the request being wrong for the tree as it stands, and sending it
+    /// again unchanged gets the same answer — with three exceptions the server means as "later": a
+    /// timeout, a rate limit, and "too early". Not-found and not-authenticated are 4xx too, but
+    /// each already means something more specific to the file provider and is read before this is
+    /// asked.
+    ///
+    /// The bucket's 4xx is never one. What it refuses is a signed URL, and the likeliest way to be
+    /// refused is for the signature to have expired — an upload that outlived its ticket, a
+    /// download queued behind others past the redirect's window. The next attempt is made with a
+    /// fresh ticket or a fresh redirect and goes through, so it is "later" too. Calling it a
+    /// refusal would have the system give the item up for good over a transfer that merely needed
+    /// retrying: `FileProviderError.translate` says what a refusal costs.
+    var isRefusal: Bool {
+        guard case .http(let status, _) = self else { return false }
+        return (400..<500).contains(status) && ![401, 404, 408, 425, 429].contains(status)
+    }
+}
+
+/// One slot of a batched listing (`HelmsleyAPI.listings`): the folder's listing, or — for a
+/// folder the portal refused on its own — the status and sentence it was refused with.
+private struct ListingSlot: Decodable {
+    let status: Int?
+    let error: String?
+    let listing: Listing?
+
+    private enum CodingKeys: String, CodingKey { case status, error }
+
+    init(from decoder: Decoder) throws {
+        let keyed = try decoder.container(keyedBy: CodingKeys.self)
+        status = try keyed.decodeIfPresent(Int.self, forKey: .status)
+        error = try keyed.decodeIfPresent(String.self, forKey: .error)
+        listing = status == nil ? try Listing(from: decoder) : nil
+    }
+}
+
+private struct ListingsAnswer: Decodable {
+    let listings: [ListingSlot]
 }
 
 // MARK: - Client
@@ -193,6 +236,31 @@ struct HelmsleyAPI: Sendable {
         var components = URLComponents(url: base.appendingPathComponent("list"), resolvingAgainstBaseURL: false)!
         components.queryItems = destination.query
         return try await get(components.url!)
+    }
+
+    /// The portal's ceiling on one batched listing.
+    static let listingsPerRequest = 100
+
+    /// Several directories in one round trip — `POST listings` — answered in the order asked. A
+    /// folder the portal refuses fails in its own slot, as the `APIError.http` that `list` would
+    /// have thrown for it, so one folder gone since it was opened costs nobody else their listing.
+    /// More than the portal's ceiling are asked for in rounds.
+    func listings(_ destinations: [Destination]) async throws -> [Result<Listing, APIError>] {
+        var answers: [Result<Listing, APIError>] = []
+        var start = 0
+        while start < destinations.count {
+            let round = Array(destinations[start..<min(start + Self.listingsPerRequest, destinations.count)])
+            let answer: ListingsAnswer = try await post(base.appendingPathComponent("listings"),
+                                                        body: ["folders": round.map(\.listingEntry)])
+            guard answer.listings.count == round.count else { throw APIError.malformedResponse }
+            answers += answer.listings.map { slot -> Result<Listing, APIError> in
+                if let status = slot.status { return .failure(.http(status: status, message: slot.error ?? "")) }
+                guard let listing = slot.listing else { return .failure(.malformedResponse) }
+                return .success(listing)
+            }
+            start += round.count
+        }
+        return answers
     }
 
     /// One row by id, which is the only lookup that answers for a directory as well as a file and
@@ -226,15 +294,24 @@ struct HelmsleyAPI: Sendable {
     /// progress is attached to it as a child, which both drives the percentage the user watches and
     /// makes cancelling it cancel the actual transfer.
     func downloadContents(id: String, reporting parent: Progress? = nil) async throws -> URL {
-        var request = URLRequest(url: documentURL(id).appendingPathComponent("content"))
-        request.setValue("Bearer \(try await TokenProvider.shared.accessToken())", forHTTPHeaderField: "Authorization")
-
-        let (url, response) = try await Transport.download(request, reporting: parent)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let (url, response) = try await withToken { token in
+            var request = URLRequest(url: documentURL(id).appendingPathComponent("content"))
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            let (url, response) = try await Transport.download(request, reporting: parent)
+            // A refusal that is about to be retried leaves a file behind that nobody else will see.
+            if Self.status(of: response) == 401 { try? FileManager.default.removeItem(at: url) }
+            return (url, response)
+        }
+        let status = Self.status(of: response)
         guard (200..<300).contains(status) else {
             // The temporary file is the caller's only on success — a refusal holds the portal's
             // error page, which nothing wants and nobody would delete.
             try? FileManager.default.removeItem(at: url)
+            // Whose refusal it is decides what it means. The portal answers before the redirect —
+            // a row that is gone is its 404 — and the bucket after it, where a 403 is a signature
+            // that expired while the fetch waited its turn. The response's URL is where the final
+            // answer came from, which is the one thing that tells the two apart.
+            guard Self.isPortal(response) else { throw APIError.bucketRefused(status: status) }
             throw APIError.http(status: status, message: "Could not download file \(id).")
         }
         return url
@@ -286,7 +363,9 @@ struct HelmsleyAPI: Sendable {
         ask["contentType"] = mime ?? NSNull()
         let ticket: Ticket = try await post(base.appendingPathComponent("upload-ticket"), body: ask)
 
-        var put = URLRequest(url: URL(string: ticket.uploadUrl)!)
+        // The server's to get wrong: a ticket this app cannot address is a bad answer, not a crash.
+        guard let uploadURL = URL(string: ticket.uploadUrl) else { throw APIError.malformedResponse }
+        var put = URLRequest(url: uploadURL)
         put.httpMethod = "PUT"
         // Both headers were signed into the URL, so they must be sent back exactly: Cloud Storage
         // recomputes the signature over them and refuses the PUT if either differs.
@@ -297,7 +376,7 @@ struct HelmsleyAPI: Sendable {
         // credential, and the portal's bearer token has no business on another host.
         let (_, response) = try await Transport.upload(put, fromFile: fileURL, reporting: parent)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(status) else { throw APIError.uploadRejected(status: status) }
+        guard (200..<300).contains(status) else { throw APIError.bucketRefused(status: status) }
         return ticket.uploadId
     }
 
@@ -396,6 +475,9 @@ struct HelmsleyAPI: Sendable {
     func forgetPushToken(_ token: String) async throws {
         var request = URLRequest(url: base.appendingPathComponent("push-token"))
         request.httpMethod = "DELETE"
+        // Best-effort by every caller, and one of them is a sign-out the user is watching: a
+        // portal that cannot be reached should not hold that up for the session's full minute.
+        request.timeoutInterval = 10
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["token": token])
         _ = try await send(request) as Empty
@@ -440,14 +522,15 @@ struct HelmsleyAPI: Sendable {
     }
 
     private func send<T: Decodable>(_ request: URLRequest) async throws -> T {
-        var authorised = request
-        authorised.setValue("Bearer \(try await TokenProvider.shared.accessToken())", forHTTPHeaderField: "Authorization")
-
-        let (data, response) = try await URLSession.shared.data(for: authorised, delegate: Transport.sanitiser)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let (data, response) = try await withToken { token in
+            var authorised = request
+            authorised.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            return try await URLSession.shared.data(for: authorised, delegate: Transport.sanitiser)
+        }
+        let status = Self.status(of: response)
         guard (200..<300).contains(status) else {
             let message = Self.serverMessage(data) ?? ""
-            Log.api.error("\(authorised.httpMethod ?? "GET", privacy: .public) \(authorised.url?.path ?? "?", privacy: .public) -> \(status, privacy: .public) \(message, privacy: .public)")
+            Log.api.error("\(request.httpMethod ?? "GET", privacy: .public) \(request.url?.path ?? "?", privacy: .public) -> \(status, privacy: .public) \(message, privacy: .public)")
             throw APIError.http(status: status, message: message)
         }
         if T.self == Empty.self { return Empty() as! T }
@@ -456,6 +539,34 @@ struct HelmsleyAPI: Sendable {
         } catch {
             throw APIError.malformedResponse
         }
+    }
+
+    /// Presents a bearer token, and presents a fresh one once if the portal says no to the first.
+    ///
+    /// A 401 is the server's word that the token is not going to be accepted, whatever its expiry
+    /// says — a grant revoked in the portal leaves an access token that looks good for the rest of
+    /// its hour. So the refused token is handed back to `TokenProvider`, which rotates rather than
+    /// re-presents it, and the request goes once more. A second refusal is what "not signed in"
+    /// means: the credential this process holds does not work, and signing in again is the way back.
+    private func withToken<R>(_ perform: (String) async throws -> (R, URLResponse)) async throws -> (R, URLResponse) {
+        let token = try await TokenProvider.shared.accessToken()
+        let first = try await perform(token)
+        guard Self.status(of: first.1) == 401 else { return first }
+
+        Log.api.info("the portal refused the access token — refreshing and trying once more")
+        await TokenProvider.shared.reject(token)
+        let again = try await perform(try await TokenProvider.shared.accessToken())
+        guard Self.status(of: again.1) == 401 else { return again }
+        throw OAuthError.notAuthenticated
+    }
+
+    private static func status(of response: URLResponse) -> Int {
+        (response as? HTTPURLResponse)?.statusCode ?? 0
+    }
+
+    /// Whether a response is the portal's own, rather than from wherever it redirected to.
+    private static func isPortal(_ response: URLResponse) -> Bool {
+        response.url?.host?.lowercased() == Configuration.baseURL.host?.lowercased()
     }
 
     /// The portal answers every refusal with `{ error: "..." }`, and that sentence is written to be
@@ -526,6 +637,9 @@ enum Transport {
     /// is both the percentage the user sees and the cancellation path the framework requires.
     private static func attach(_ task: URLSessionTask, to parent: Progress?) {
         guard let parent else { return }
+        // Reset rather than added to: a transfer retried after a refused token attaches a second
+        // child, and the first has already counted its units against the parent.
+        parent.completedUnitCount = 0
         parent.totalUnitCount = 100
         parent.addChild(task.progress, withPendingUnitCount: 100)
     }

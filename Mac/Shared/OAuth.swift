@@ -105,6 +105,7 @@ enum OAuthError: LocalizedError {
     case tokenEndpoint(status: Int, body: String)
     case noRefreshToken
     case stateMismatch
+    case sheetDidNotOpen
 
     var errorDescription: String? {
         switch self {
@@ -116,6 +117,8 @@ enum OAuthError: LocalizedError {
             return "The sign-in server issued no refresh token."
         case .stateMismatch:
             return "The sign-in response did not match the request that started it."
+        case .sheetDidNotOpen:
+            return "The sign-in window could not be opened. Bring Helmsley Drive to the front and try again."
         }
     }
 }
@@ -139,6 +142,11 @@ actor TokenProvider {
     /// what guarantees the refresh token is spent once per rotation in this process.
     private var refreshing: Task<String, Error>?
 
+    /// An access token the portal has refused. Its expiry says nothing about a grant revoked
+    /// server-side, so a refusal is remembered and the token is rotated rather than reused — once:
+    /// what the rotation mints replaces this.
+    private var rejected: String?
+
     var isSignedIn: Bool { (cached ?? TokenStore.load()) != nil }
 
     func store(_ tokens: TokenSet) throws {
@@ -161,8 +169,18 @@ actor TokenProvider {
         cached = nil
     }
 
+    /// The portal answered 401 to this token. Forgotten in memory so that the next request refreshes
+    /// rather than presenting it again for the rest of its hour — the server has already said it
+    /// is not going to accept it.
+    func reject(_ accessToken: String) {
+        rejected = accessToken
+        if cached?.accessToken == accessToken { cached = nil }
+    }
+
     func accessToken() async throws -> String {
-        if let tokens = cached, tokens.isAccessTokenFresh { return tokens.accessToken }
+        if let tokens = cached, tokens.isAccessTokenFresh, tokens.accessToken != rejected {
+            return tokens.accessToken
+        }
 
         if let refreshing { return try await refreshing.value }
         let task = Task { try await refresh() }
@@ -183,7 +201,7 @@ actor TokenProvider {
             Log.auth.error("no token in keychain (access group \(Configuration.keychainAccessGroup, privacy: .public))")
             throw OAuthError.notAuthenticated
         }
-        if stored.isAccessTokenFresh {
+        if stored.isAccessTokenFresh, stored.accessToken != rejected {
             cached = stored
             return stored.accessToken
         }
@@ -216,6 +234,7 @@ actor TokenProvider {
         // from, so if the save fails this copy is the only one anywhere — throwing it away over a
         // keychain hiccup would sign the user out while holding a perfectly good credential.
         cached = refreshed
+        rejected = nil
         do {
             try TokenStore.save(refreshed)
         } catch {

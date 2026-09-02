@@ -142,44 +142,75 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             return progress
         }
 
+        let filename = itemTemplate.filename
         // A folder is a row wherever it is in this tree, so the server can always be asked for one.
         // Whether it will take it is the destination's own answer, which the listing already carried
         // — a folder that refuses one never offered `.allowsAddingSubItems`, so Finder does not get
         // this far, and a race against somebody else's change is refused in a sentence worth showing.
-        if itemTemplate.contentType == .folder {
-            return makeFolder(in: parent, named: itemTemplate.filename, progress: progress, completionHandler: completionHandler)
-        }
-
-        guard let contents = url else {
+        //
+        // Anything that is a directory, not only `.folder`: a Pages document, a Keynote deck or an
+        // RTFD file arrives as a `.package`, which is a directory with a telling name, and its parts
+        // follow as children. The framework says a replicated extension must take one, and asking
+        // for `.folder` alone answered every such drop with "a file must have contents". The row it
+        // becomes is a folder; `FileProviderItem` reads the package back off the name.
+        let folder = itemTemplate.contentType?.conforms(to: .directory) == true
+        if !folder, url == nil {
             completionHandler(nil, [], false, FileProviderError.unsupported("A file must have contents to be filed."))
             return progress
         }
-
-        let destination = parent.destination
-        let filename = itemTemplate.filename
         // The template's type is what Finder settled from the extension it is being filed under;
         // the server signs it into the upload URL, so it has to be decided before a byte is sent.
         let mime = itemTemplate.contentType?.preferredMIMEType
 
         let work = Task {
             do {
-                let remote = try await api.upload(to: destination, filename: filename, mime: mime, fileURL: contents, reporting: progress)
-                await signal.fire()
-                // No pending fields and nothing still uploading: the file is filed by the time this
-                // returns, because the finalise step is what created it.
-                //
-                // The row is new and in a folder that just took it, so everything is open to it —
-                // which is what the server answers, and what is assumed of a portal that does not.
-                completionHandler(
-                    try self.reportable(FileProviderItem.file(
+                // The system's own warning that it is re-offering something it has already seen —
+                // after a re-sync, for a file that was changed here in the meantime. The folder is
+                // looked in first, and a row already under that name is answered with rather than
+                // filed beside: uploading blind would leave the portal a numbered twin, and the
+                // system compares the versions it gets back and asks for a save if the bytes differ.
+                if options.contains(.mayAlreadyExist),
+                   let existing = try await self.existingItem(named: filename, in: parent) {
+                    Log.provider.info("\(filename, privacy: .public) already exists in \(parent.logDescription, privacy: .public) — answering with it")
+                    completionHandler(try self.reportable(existing), [], false, nil)
+                    return
+                }
+
+                let created: FileProviderItem
+                if folder {
+                    // The name that comes back is not always the name asked for — a collision is
+                    // numbered rather than refused, which is what a filesystem does — so the item
+                    // handed to the system is built from the server's answer. Reporting the
+                    // requested name instead would leave Finder showing one folder under two names
+                    // until something re-listed it.
+                    //
+                    // A folder somebody just made in a folder that took it: theirs to rename, move,
+                    // fill and throw away, which is what the server says of one and what is assumed
+                    // of a portal that does not say.
+                    let remote = try await api.createFolder(in: parent.destination, name: filename)
+                    created = FileProviderItem.folder(
                         in: parent,
                         remote: remote,
                         permissions: remote.permissions ?? Permissions(assumedFrom: true)
-                    )),
-                    [], false, nil
-                )
+                    )
+                } else {
+                    // No pending fields and nothing still uploading: the file is filed by the time
+                    // this returns, because the finalise step is what created it.
+                    //
+                    // The row is new and in a folder that just took it, so everything is open to it
+                    // — which is what the server answers, and what is assumed of a portal that does
+                    // not.
+                    let remote = try await api.upload(to: parent.destination, filename: filename, mime: mime, fileURL: url!, reporting: progress)
+                    created = FileProviderItem.file(
+                        in: parent,
+                        remote: remote,
+                        permissions: remote.permissions ?? Permissions(assumedFrom: true)
+                    )
+                }
+                await signal.fire()
+                completionHandler(try self.reportable(created), [], false, nil)
             } catch {
-                Log.provider.error("upload to \(destination.logDescription, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                Log.provider.error("creating \(filename, privacy: .public) in \(parent.logDescription, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 completionHandler(nil, [], false, FileProviderError.translate(error))
             }
         }
@@ -187,40 +218,10 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         return progress
     }
 
-    /// The folder half of `createItem`.
-    ///
-    /// The name that comes back is not always the name asked for — a collision is numbered rather
-    /// than refused, which is what a filesystem does — so the item handed to the system is built
-    /// from the server's answer. Reporting the requested name instead would leave Finder showing
-    /// one folder under two names until something re-listed it.
-    private func makeFolder(
-        in parent: ItemIdentity,
-        named name: String,
-        progress: Progress,
-        completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
-    ) -> Progress {
-        let work = Task {
-            do {
-                let remote = try await api.createFolder(in: parent.destination, name: name)
-                await signal.fire()
-                // A folder somebody just made in a folder that took it: theirs to rename, move,
-                // fill and throw away, which is what the server says of one and what is assumed of
-                // a portal that does not say.
-                completionHandler(
-                    try self.reportable(FileProviderItem.folder(
-                        in: parent,
-                        remote: remote,
-                        permissions: remote.permissions ?? Permissions(assumedFrom: true)
-                    )),
-                    [], false, nil
-                )
-            } catch {
-                Log.provider.error("creating a folder in \(parent.logDescription, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
-                completionHandler(nil, [], false, FileProviderError.translate(error))
-            }
-        }
-        progress.cancellationHandler = { work.cancel() }
-        return progress
+    /// The row already under this name in `parent`, if there is one — folder or file.
+    private func existingItem(named name: String, in parent: ItemIdentity) async throws -> FileProviderItem? {
+        let listing = try await api.list(parent.destination)
+        return FileProviderItem.contents(of: listing, in: parent).first { $0.filename == name }
     }
 
     func modifyItem(
@@ -263,15 +264,24 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         let target = item.parentItemIdentifier
         let work = Task {
             do {
-                if relocation.contains(.parentItemIdentifier) {
-                    try await self.reparent(itemID, to: target)
-                }
                 // Moved first, then renamed — because the two settle a name clash differently. A
                 // move numbers what it cannot keep, so doing it first parks the item in the target
                 // under whatever name is free; the rename then asks for the name the user actually
                 // typed, in the folder where it has to be free, and says so if it is taken. The
                 // other order would refuse a rename over a clash in the folder being left behind.
-                if relocation.contains(.filename) {
+                //
+                // Except into the bin, where the order flips: the portal refuses to rename anything
+                // it is holding there, so a name Finder settles on for the trash — it stamps the
+                // time on one that clashes — has to be taken while the row is still in its folder.
+                let trashing = relocation.contains(.parentItemIdentifier) && target == .trashContainer
+                let renaming = relocation.contains(.filename)
+                if renaming, trashing {
+                    try await api.rename(id: itemID, to: item.filename)
+                }
+                if relocation.contains(.parentItemIdentifier) {
+                    try await self.reparent(itemID, to: target)
+                }
+                if renaming, !trashing {
                     try await api.rename(id: itemID, to: item.filename)
                 }
 
@@ -396,12 +406,17 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
 
         Task {
             do {
-                // Nothing is looked up first: a replicated extension's signals are only ever about
-                // the working set, so naming the folder the item sat in would buy nothing — what
-                // the folder lost is worked out when the system comes asking for those changes.
+                // The folder the item sat in is not looked up: a replicated extension's signals are
+                // only ever about the working set, so naming it would buy nothing — what the folder
+                // lost is worked out when the system comes asking for those changes.
                 //
                 // A folder takes what is under it, including anything already in the bin from
-                // inside it, which is gone either way once the folder holding it is.
+                // inside it, which is gone either way once the folder holding it is. That is what
+                // the system asks for with `.recursive`, and it is all a Finder delete ever sends;
+                // without it a folder with anything inside is to be refused, not emptied.
+                if !options.contains(.recursive) {
+                    try await self.refuseUnlessEmpty(itemID)
+                }
                 try await api.delete(id: itemID)
                 await signal.fire()
                 completionHandler(nil)
@@ -414,6 +429,16 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             progress.completedUnitCount = 1
         }
         return progress
+    }
+
+    /// `.directoryNotEmpty` for a folder with anything in it, which is what a delete without
+    /// `.recursive` has to answer. A file, or a folder with nothing under it, passes.
+    private func refuseUnlessEmpty(_ itemID: String) async throws {
+        guard try await api.item(id: itemID).isFolder else { return }
+        let listing = try await api.list(.item(itemID))
+        guard listing.folders.isEmpty, listing.files.isEmpty else {
+            throw NSFileProviderError(.directoryNotEmpty)
+        }
     }
 
     // MARK: - Enumeration
@@ -464,6 +489,19 @@ enum FileProviderError {
             return NSFileProviderError(.notAuthenticated)
         case let api as APIError where api.isNotFound:
             return NSFileProviderError(.noSuchItem)
+        case let api as APIError where api.isRefusal:
+            // The portal has said no and will say no again — a folder this admin may not write
+            // in, a name already taken, a file over the limit. Handed back as a generic error the
+            // system reads it as "not just now" and keeps trying; `.cannotSynchronize` is what makes
+            // it show the sentence once, against the item, and stop.
+            //
+            // Stop for good: the system does not retry an item this has been said of until it is
+            // edited on disk. Which is why only the portal's no arrives here — the bucket's is a
+            // signed URL that expired, and `isRefusal` leaves it out, so a transfer that merely
+            // needs a fresh ticket is retried rather than stranded with an error badge.
+            return NSFileProviderError(.cannotSynchronize, userInfo: [
+                NSLocalizedDescriptionKey: api.localizedDescription,
+            ])
         default:
             return error
         }

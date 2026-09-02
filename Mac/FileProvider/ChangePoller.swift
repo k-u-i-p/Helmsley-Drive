@@ -27,6 +27,21 @@ struct ChangeSignal {
     }
 }
 
+/// What the working set's enumerator reports on the watched folders' behalf, and what to remember
+/// once it has.
+///
+/// The snapshots ride along unrecorded. They are written by `ChangePoller.delivered(_:)`, after the
+/// system has taken the changes — a folder's changes have no sync anchor of their own to fall back
+/// on, so recording them first meant that an extension killed between the write and the hand-over
+/// (iOS does that, under memory pressure) lost them for good: the next round found the folder in
+/// step and said nothing. Recorded afterwards, the worst case is a change reported twice, which the
+/// system takes in its stride.
+struct PendingChanges {
+    var updated: [NSFileProviderItem] = []
+    var deleted: [NSFileProviderItemIdentifier] = []
+    fileprivate var snapshots: [(container: NSFileProviderItemIdentifier, snapshot: SnapshotStore.Snapshot)] = []
+}
+
 /// A container the poller can ask about without knowing what kind of container it is.
 protocol PolledContainer: AnyObject {
 
@@ -35,6 +50,20 @@ protocol PolledContainer: AnyObject {
     /// The container as the server has it now: the items it holds, and the version map a diff and a
     /// sync anchor are both built from. One request, so the two always describe the same moment.
     func currentListing() async throws -> ([NSFileProviderItem], SnapshotStore.Snapshot)
+
+    /// Where the container's listing comes from, so the poller can ask about several containers in
+    /// one request (`HelmsleyAPI.listings`) — or nil for one listed some other way, which is asked
+    /// about on its own through `currentListing()`.
+    var polledDestination: Destination? { get }
+
+    /// The container as a listing the server has just answered describes it: what `currentListing()`
+    /// would have made of the same answer. Only asked of a container with a `polledDestination`.
+    func contents(of listing: Listing) -> ([NSFileProviderItem], SnapshotStore.Snapshot)
+}
+
+extension PolledContainer {
+    var polledDestination: Destination? { nil }
+    func contents(of listing: Listing) -> ([NSFileProviderItem], SnapshotStore.Snapshot) { ([], [:]) }
 }
 
 /// Watches the folders someone is currently looking at, and signals the ones that have moved on the
@@ -62,8 +91,10 @@ protocol PolledContainer: AnyObject {
 /// The working set is left out of the watch: its enumerator lives as long as the extension, so
 /// polling it would mean a request every interval forever, and it is what everything is reported *to*.
 ///
-/// Detection costs one listing and the reporting enumeration costs a second. That is the price of a
-/// portal that cannot say what changed, and it is paid only when something has.
+/// Detection costs one request for every folder watched, and the reporting enumeration a second.
+/// That is the price of a portal that cannot say what changed, and it is paid only when something
+/// has — and it is one request, not one per folder: the portal answers a batch of folders in a
+/// single round trip, and both steps ask for the watched folders that way.
 actor ChangePoller {
 
     /// Long enough that a folder left open is not a standing load on the portal, short enough that
@@ -79,6 +110,7 @@ actor ChangePoller {
     private static let waiting: Duration = .seconds(900)
 
     private let signal: ChangeSignal
+    private let api = HelmsleyAPI.shared
     private var watched: [String: Watch] = [:]
     private var loop: Task<Void, Never>?
 
@@ -155,38 +187,86 @@ actor ChangePoller {
     /// folders to ask about are worked out here, where knowing which ones have an enumerator is
     /// possible at all.
     ///
-    /// Each folder's snapshot is recorded as its changes are handed over, so the round that follows
-    /// finds it in step and says nothing. The trash is left out: the working set's own listing is the
-    /// bin, so its diff is already covered and reporting it twice would report every binned item as
-    /// changed whenever the trash happened to be open.
-    func pendingChanges() async -> (updated: [NSFileProviderItem], deleted: [NSFileProviderItemIdentifier]) {
-        var updated: [NSFileProviderItem] = []
-        var deleted: [NSFileProviderItemIdentifier] = []
+    /// Each folder's snapshot is recorded once the system has taken its changes — `delivered(_:)`,
+    /// which the caller owes this — so the round that follows finds it in step and says nothing.
+    /// The trash is left out: the working set's own listing is the bin, so its diff is already
+    /// covered and reporting it twice would report every binned item as changed whenever the trash
+    /// happened to be open.
+    func pendingChanges() async -> PendingChanges {
+        var pending = PendingChanges()
 
+        for (container, current) in await currentListings(excludingTrash: true) {
+            let identifier = container.polledIdentifier
+            let previous = await SnapshotStore.shared.current(for: identifier)
+            guard previous != current.1 else { continue }
+
+            let changes = await Departures.changes(from: previous, to: current, in: identifier.rawValue)
+            pending.updated += changes.updated
+            pending.deleted += changes.deleted
+            pending.snapshots.append((identifier, changes.snapshot))
+        }
+        return pending
+    }
+
+    /// Every watched container as the server has it now: one request for all the folders that can
+    /// be asked about together, and one each for the rest. A container whose listing fails is left
+    /// out — it keeps what it had, and the next round asks again. Debug rather than error, because
+    /// a closed laptop would otherwise write a line every time the system asked.
+    private func currentListings(excludingTrash: Bool) async -> [(container: any PolledContainer, listing: ([NSFileProviderItem], SnapshotStore.Snapshot))] {
+        var together: [(container: any PolledContainer, destination: Destination)] = []
+        var alone: [any PolledContainer] = []
+        // Over a copy of the keys, and each one read again as it comes up: the awaits below let a
+        // registration or an invalidation land mid-round, and what is polled should be what is
+        // watched now rather than what was watched when the round began.
         for key in Array(watched.keys) {
             guard let container = watched[key]?.container else {
                 watched[key] = nil
                 continue
             }
-            let identifier = container.polledIdentifier
-            guard identifier != .trashContainer else { continue }
-
-            do {
-                let (items, snapshot) = try await container.currentListing()
-                let previous = await SnapshotStore.shared.current(for: identifier)
-                guard previous != snapshot else { continue }
-
-                let moved = SnapshotStore.diff(previous, snapshot, over: items)
-                updated += moved.updated
-                deleted += moved.deleted
-                await SnapshotStore.shared.record(snapshot, for: identifier)
-            } catch {
-                // The folder keeps what it had, and the next round asks again. Debug rather than
-                // error: a closed laptop would otherwise write a line every time the system asked.
-                Log.enumeration.debug("collecting changes in \(identifier.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            if excludingTrash, container.polledIdentifier == .trashContainer { continue }
+            if let destination = container.polledDestination {
+                together.append((container, destination))
+            } else {
+                alone.append(container)
             }
         }
-        return (updated, deleted)
+        // One folder is asked for on its own, as it always was; the batch is for two or more.
+        if together.count == 1 {
+            alone.append(together[0].container)
+            together.removeAll()
+        }
+
+        var listings: [(container: any PolledContainer, listing: ([NSFileProviderItem], SnapshotStore.Snapshot))] = []
+        for container in alone {
+            do {
+                listings.append((container, try await container.currentListing()))
+            } catch {
+                Log.enumeration.debug("listing \(container.polledIdentifier.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        guard !together.isEmpty else { return listings }
+        do {
+            let answers = try await api.listings(together.map(\.destination))
+            for (entry, answer) in zip(together, answers) {
+                switch answer {
+                case .success(let listing):
+                    listings.append((entry.container, entry.container.contents(of: listing)))
+                case .failure(let error):
+                    Log.enumeration.debug("listing \(entry.container.polledIdentifier.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+        } catch {
+            Log.enumeration.debug("listing \(together.count) folders together failed: \(error.localizedDescription, privacy: .public)")
+        }
+        return listings
+    }
+
+    /// The system has taken `pending`, so what it described is what each folder is now known to
+    /// hold. See `PendingChanges` for why this is a second step rather than part of the first.
+    func delivered(_ pending: PendingChanges) async {
+        for (container, snapshot) in pending.snapshots {
+            await SnapshotStore.shared.record(snapshot, for: container)
+        }
     }
 
     /// What `PushRegistrar` learned from registering: whether the portal will push this device at
@@ -250,42 +330,44 @@ actor ChangePoller {
         await ask(key)
     }
 
-    /// Every watched container, asked once.
+    /// Every watched container, asked once — in one request, for the folders that can be.
     private func ask() async {
-        // Over a copy of the keys, and each one read again as it comes up: the awaits below let a
-        // registration or an invalidation land mid-round, and what is polled should be what is
-        // watched now rather than what was watched when the round began.
-        for key in Array(watched.keys) {
-            await ask(key)
+        for (container, current) in await currentListings(excludingTrash: false) {
+            await consider(container, current.1)
         }
     }
 
-    /// One container: has it moved on the server, and say so if it has.
+    /// One container, asked on its own.
     private func ask(_ key: String) async {
         guard let container = watched[key]?.container else {
             watched[key] = nil
             return
         }
-        let identifier = container.polledIdentifier
         do {
-            let current = try await container.currentListing().1
-            let held = await SnapshotStore.shared.current(for: identifier)
-            guard current != held else { return }
-
-            // The working set, not this folder — signalling the folder is discarded (see
-            // `ChangeSignal`). What the system then asks the working set for is `pendingChanges()`,
-            // which lists this folder again and reports what moved.
-            //
-            // Signalled every round the two disagree, rather than once: the store advances when the
-            // change is actually handed over, so this stops of its own accord the moment the system
-            // has taken it — and goes on asking if it has not.
-            Log.enumeration.info("\(identifier.rawValue, privacy: .public) has moved on the server — signalling the working set")
-            await signal.fire()
+            await consider(container, try await container.currentListing().1)
         } catch {
             // A poll that fails changes nothing: the folder keeps what it had and the next round
             // asks again. Debug rather than error, because a closed laptop or a dropped link would
             // otherwise write a line every interval about a state nobody can act on.
-            Log.enumeration.debug("polling \(identifier.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+            Log.enumeration.debug("polling \(container.polledIdentifier.rawValue, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    /// One container's version map against what it is known to hold: has it moved on the server,
+    /// and say so if it has.
+    private func consider(_ container: any PolledContainer, _ current: SnapshotStore.Snapshot) async {
+        let identifier = container.polledIdentifier
+        let held = await SnapshotStore.shared.current(for: identifier)
+        guard current != held else { return }
+
+        // The working set, not this folder — signalling the folder is discarded (see
+        // `ChangeSignal`). What the system then asks the working set for is `pendingChanges()`,
+        // which lists this folder again and reports what moved.
+        //
+        // Signalled every round the two disagree, rather than once: the store advances when the
+        // change is actually handed over, so this stops of its own accord the moment the system
+        // has taken it — and goes on asking if it has not.
+        Log.enumeration.info("\(identifier.rawValue, privacy: .public) has moved on the server — signalling the working set")
+        await signal.fire()
     }
 }

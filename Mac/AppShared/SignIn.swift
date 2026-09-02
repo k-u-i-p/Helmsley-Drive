@@ -48,6 +48,13 @@ final class SignIn: NSObject {
     private func authorize(url: URL) async throws -> URL {
         let scheme = URL(string: Configuration.oauthRedirectURI)?.scheme
 
+        // One sheet at a time. A second request while one is up — Finder's Sign In button relayed
+        // while the app's own sheet is open — cancels the first, whose continuation then resumes
+        // with `canceledLogin` and says nothing, rather than being dropped on the floor when the
+        // reference below is overwritten.
+        session?.cancel()
+        session = nil
+
         return try await withCheckedThrowingContinuation { continuation in
             let session = ASWebAuthenticationSession(url: url, callbackURLScheme: scheme) { callback, error in
                 if let callback {
@@ -61,7 +68,13 @@ final class SignIn: NSObject {
             // for a password and an SMS code all over again — the consent screen is all they see.
             session.prefersEphemeralWebBrowserSession = false
             self.session = session
-            session.start()
+            // A session that fails to start never calls its completion handler — so without this
+            // the continuation would never resume, and the caller would wait on it for ever.
+            guard session.start() else {
+                self.session = nil
+                continuation.resume(throwing: OAuthError.sheetDidNotOpen)
+                return
+            }
         }
     }
 }

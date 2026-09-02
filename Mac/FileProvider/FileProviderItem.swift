@@ -157,7 +157,7 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
             identity: .node(id: remote.id),
             parent: container.identifier,
             filename: remote.name,
-            contentType: .folder,
+            contentType: contentType(forFolderNamed: remote.name),
             capabilities: capabilities(permissions, folder: true, standing: standing),
             documentSize: nil,
             dates: dates,
@@ -193,6 +193,34 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
                 metadata: Self.metadata(remote.filename, permissions, standing, dates)
             )
         )
+    }
+
+    /// Everything a folder lists, as items — what its enumerator reports, and what a create that
+    /// may already have happened looks through.
+    ///
+    /// Everything a folder in the bin lists is inside a thrown-away subtree, and what may be done to
+    /// it says so. Learned once from the folder that was asked for rather than per row: only the top
+    /// of what was thrown away carries the mark, so no row down here shows it.
+    static func contents(of listing: Listing, in container: ItemIdentity) -> [FileProviderItem] {
+        let standing: Standing = listing.isTrashed ? .covered : .live
+
+        let folders = listing.folders.map {
+            folder(
+                in: container,
+                remote: $0,
+                permissions: $0.permissions ?? Permissions(assumedFrom: $0.writable),
+                standing: standing
+            )
+        }
+        let files = listing.files.map {
+            file(
+                in: container,
+                remote: $0,
+                permissions: $0.permissions ?? listing.assumedForFiles,
+                standing: standing
+            )
+        }
+        return folders + files
     }
 
     // MARK: - As the server describes one on its own
@@ -236,7 +264,7 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
             identity: identity ?? .node(id: remote.id),
             parent: parent,
             filename: remote.filename,
-            contentType: folder ? .folder : contentType(for: remote),
+            contentType: folder ? contentType(forFolderNamed: remote.filename) : contentType(for: remote),
             capabilities: capabilities(permissions, folder: folder, standing: standing),
             documentSize: folder ? nil : remote.size.map(NSNumber.init(value:)),
             dates: dates,
@@ -301,6 +329,20 @@ final class FileProviderItem: NSObject, NSFileProviderItem {
         let ext = (remote.filename as NSString).pathExtension
         if !ext.isEmpty, let type = UTType(filenameExtension: ext) { return type }
         return .data
+    }
+
+    /// What a folder is: a package where its name says so, and a plain folder otherwise.
+    ///
+    /// A Pages document, a Keynote deck or an RTFD file is a directory with a telling extension,
+    /// and that is all a package is. One dropped on the volume arrives as a `.package` template and
+    /// becomes a folder row holding its parts; the portal has no other shape for it. Reported back
+    /// as `.folder`, the two halves of the system would disagree about one item, and Finder would
+    /// show a document as a folder of pieces. Reading the type off the name is what the OS does for
+    /// any directory on any disk, so the row round-trips as what it was dropped as.
+    private static func contentType(forFolderNamed name: String) -> UTType {
+        let ext = (name as NSString).pathExtension
+        if !ext.isEmpty, let type = UTType(filenameExtension: ext, conformingTo: .package) { return type }
+        return .folder
     }
 
     // MARK: - Versions

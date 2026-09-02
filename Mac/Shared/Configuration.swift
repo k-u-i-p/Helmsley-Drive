@@ -41,8 +41,24 @@ enum Configuration {
     /// `errSecMissingEntitlement` at the first keychain call, which presents as being unable to sign
     /// in, with nothing on screen pointing at the team id. Asking the binary what it was actually
     /// signed with cannot be wrong.
-    static let keychainAccessGroup: String = {
+    static var keychainAccessGroup: String {
         #if os(macOS)
+        return entitledKeychainAccessGroup
+        #else
+        // Asked again on every call until it answers, and remembered only once it has: a probe
+        // that fails — the device still locked when a push loads the extension, say — must not
+        // pin this process to a group no entitlement grants for the rest of its life.
+        if let known = probeLock.withLock({ probedGroup }) { return known }
+        guard let group = probedKeychainAccessGroup() else { return declaredKeychainGroup }
+        probeLock.withLock { probedGroup = group }
+        return group
+        #endif
+    }
+
+    private static let declaredKeychainGroup = "uk.co.helmsley.HelmsleyDrive"
+
+    #if os(macOS)
+    private static let entitledKeychainAccessGroup: String = {
         // SecTask reads the running binary's entitlements straight back. iOS has no such API.
         if let task = SecTaskCreateFromSelf(nil),
            let groups = SecTaskCopyValueForEntitlement(task, "keychain-access-groups" as CFString, nil) as? [String],
@@ -50,39 +66,45 @@ enum Configuration {
            let group = groups.first(where: { $0.hasSuffix(".\(declaredKeychainGroup)") }) ?? groups.first {
             return group
         }
-        #else
-        if let group = probedKeychainAccessGroup() { return group }
-        #endif
         // Unsigned, or signed without the entitlement — the keychain will refuse either way, so
         // this only decides which access group appears in the error.
         return declaredKeychainGroup
     }()
+    #else
+    private static let probeLock = NSLock()
+    private static var probedGroup: String?
 
-    private static let declaredKeychainGroup = "uk.co.helmsley.HelmsleyDrive"
-
-    #if !os(macOS)
     /// The prefix, asked of the keychain itself.
     ///
     /// An item added without naming an access group lands in the *first* group the entitlement
     /// lists, and reports back which one that was. Ours lists exactly one, so a throwaway item is a
     /// reliable way to learn the team prefix on a platform that will not simply say.
     private static func probedKeychainAccessGroup() -> String? {
+        // Named for this process alone. The app, the provider and the sign-in extension all probe,
+        // and can start together; a shared name would let one's add fail as the other's duplicate,
+        // or one's tidy-up delete the other's item from under it.
         let identity: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: keychainService,
-            kSecAttrAccount as String: "access-group-probe",
+            kSecAttrAccount as String: "access-group-probe." + UUID().uuidString,
         ]
-        // Any leftover from a previous launch would make the add fail as a duplicate.
-        SecItemDelete(identity as CFDictionary)
         defer { SecItemDelete(identity as CFDictionary) }
 
         var created: CFTypeRef?
         var insert = identity
         insert[kSecValueData as String] = Data()
         insert[kSecReturnAttributes as String] = true
-        guard SecItemAdd(insert as CFDictionary, &created) == errSecSuccess,
-              let attributes = created as? [String: Any] else { return nil }
-        return attributes[kSecAttrAccessGroup as String] as? String
+        // As reachable as the token itself: the provider is loaded by a push while the phone is
+        // locked, and an item the keychain will not write until it is unlocked would fail exactly
+        // then — and only then.
+        insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        let status = SecItemAdd(insert as CFDictionary, &created)
+        guard status == errSecSuccess, let attributes = created as? [String: Any],
+              let group = attributes[kSecAttrAccessGroup as String] as? String else {
+            Log.auth.error("keychain access-group probe failed: \(KeychainError(status: status).localizedDescription, privacy: .public)")
+            return nil
+        }
+        return group
     }
     #endif
 

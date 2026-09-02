@@ -118,6 +118,15 @@ enum Destination: Sendable, Equatable {
         }
     }
 
+    /// One entry of a batched listing request (`POST listings`), naming the folder the way the
+    /// `list` query does: by item, or by the empty path for the root.
+    var listingEntry: [String: Any] {
+        switch self {
+        case .root: return ["path": [String]()]
+        case .item(let id): return ["item": id]
+        }
+    }
+
     /// For the log, which wants something short.
     var logDescription: String {
         switch self {

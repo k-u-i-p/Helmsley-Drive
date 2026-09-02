@@ -20,6 +20,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var isWorking = false
     @Published var errorMessage: String?
 
+    /// The message `refresh()` last put up, so that a later refresh that succeeds can take down
+    /// its own warning — and only its own: a failure an action reported stays until the next one.
+    private var refreshMessage: String?
+
     /// The sheet hangs off whatever window the app has up. `ASPresentationAnchor` is an `NSWindow`
     /// on one platform and a `UIWindow` on the other, which is the whole of the difference between
     /// them here.
@@ -52,19 +56,29 @@ final class AppModel: ObservableObject {
         await TokenProvider.shared.resync()
         guard await TokenProvider.shared.isSignedIn else {
             admin = nil
+            settleRefreshMessage(nil)
             return
         }
         // Asking the server who the token speaks for is also what proves it still works — an
         // expired refresh token fails here rather than the first time Finder opens a folder.
         do {
             admin = try await HelmsleyAPI.shared.whoami()
+            settleRefreshMessage(nil)
         } catch OAuthError.notAuthenticated {
             admin = nil
+            settleRefreshMessage(nil)
         } catch {
             // A server that cannot be reached is not a sign-out: the credential may be perfectly
             // good, so the identity is left unknown rather than being thrown away.
-            errorMessage = error.localizedDescription
+            settleRefreshMessage(error.localizedDescription)
         }
+    }
+
+    /// Puts up, or takes down, the warning that belongs to `refresh()`. A message something else
+    /// put up is left alone.
+    private func settleRefreshMessage(_ message: String?) {
+        if errorMessage == refreshMessage || message != nil { errorMessage = message }
+        refreshMessage = message
     }
 
     // MARK: - Actions
@@ -74,6 +88,8 @@ final class AppModel: ObservableObject {
     /// the sign-in sheet, not a window the user must find the button in. Signed in already means the
     /// click was stale (the other process may have recovered), so the window just shows the truth.
     func signInFromSystem() async {
+        // A sheet already up is the click being answered; a second would only cancel the first.
+        guard !isWorking else { return }
         await refresh()
         guard !isSignedIn else { return }
         await connect()

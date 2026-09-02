@@ -68,22 +68,6 @@ actor SnapshotStore {
         try? data.write(to: url, options: .atomic)
     }
 
-    func forget(_ container: NSFileProviderItemIdentifier) {
-        let key = Self.key(container)
-        memory[key] = nil
-        if let url = fileURL(key) { try? FileManager.default.removeItem(at: url) }
-    }
-
-    /// Wipes every snapshot — for a sign-out, after which nothing this store remembers is about an
-    /// account that is still mounted.
-    func forgetEverything() {
-        memory.removeAll()
-        guard let directory else { return }
-        for url in (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] {
-            try? FileManager.default.removeItem(at: url)
-        }
-    }
-
     private func history(for container: NSFileProviderItemIdentifier) -> [Snapshot] {
         let key = Self.key(container)
         if let cached = memory[key] { return cached }

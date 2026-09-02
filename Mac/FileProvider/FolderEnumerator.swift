@@ -30,6 +30,89 @@ private func snapshotting(
     return (reported, snapshot)
 }
 
+/// A listing's changes since the snapshot it was compared with, every departure settled.
+struct Changes {
+    var updated: [NSFileProviderItem]
+    var deleted: [NSFileProviderItemIdentifier]
+    /// The listing to record, with anything left unsettled carried over from the previous one.
+    var snapshot: SnapshotStore.Snapshot
+}
+
+/// Where the items a listing no longer holds have gone.
+///
+/// A diff can say that an identifier has left this container and nothing more, and the two things
+/// that can mean are reported in opposite ways. A row that was purged is a deletion. A row that was
+/// moved to another folder, thrown into the bin or put back out of it is still there, and
+/// `didDeleteItems` is not "left this folder" but "gone": it would drop the row from the folder
+/// that now holds it — whose own snapshot already carries it, so it would never be reported there
+/// again. Snapshots outlive launches, so a folder opened for the first time in weeks would have
+/// reported every row that moved out of it since as gone, and taken each one out of wherever it
+/// had gone to.
+///
+/// So each departure is looked up, and reported as what the server says it is now: gone, or an
+/// update carrying its current parent, which is what a move and a trashing both amount to. A
+/// declared folder that has since been materialised answers under the row that replaced it, and
+/// the reference Finder held is gone — the listing vends the row. A lookup the portal could not
+/// answer settles nothing, so the identifier is carried into the recorded snapshot under its old
+/// signature and asked about again next time, rather than guessed at in either direction.
+///
+/// One request per departure, paid only when something has left — which is the same price the
+/// rest of this file pays for a portal that cannot say what changed.
+enum Departures {
+
+    static func changes(
+        from previous: SnapshotStore.Snapshot,
+        to current: ([NSFileProviderItem], SnapshotStore.Snapshot),
+        in container: String
+    ) async -> Changes {
+        let (updated, departed) = SnapshotStore.diff(previous, current.1, over: current.0)
+        var changes = Changes(updated: updated, deleted: [], snapshot: current.1)
+        var elsewhere = 0, unsettled = 0
+        for identifier in departed {
+            switch await whereabouts(of: identifier) {
+            case .gone:
+                changes.deleted.append(identifier)
+            case .elsewhere(let item):
+                changes.updated.append(item)
+                elsewhere += 1
+            case .unknown:
+                changes.snapshot[identifier.rawValue] = previous[identifier.rawValue]
+                unsettled += 1
+            }
+        }
+        if !departed.isEmpty {
+            Log.enumeration.info("\(departed.count, privacy: .public) left \(container, privacy: .public) — \(changes.deleted.count, privacy: .public) gone, \(elsewhere, privacy: .public) elsewhere, \(unsettled, privacy: .public) unsettled")
+        }
+        return changes
+    }
+
+    private enum Whereabouts {
+        case gone
+        case elsewhere(FileProviderItem)
+        case unknown
+    }
+
+    private static func whereabouts(of identifier: NSFileProviderItemIdentifier) async -> Whereabouts {
+        // Anything this volume no longer mints — the two-tree era's prefixes — is to be dropped,
+        // and the mount point never departs from anywhere.
+        guard case .node(let id)? = ItemIdentity(identifier) else { return .gone }
+        do {
+            let remote = try await HelmsleyAPI.shared.item(id: id)
+            // Answered with another row: the reference was a declared folder's, since materialised.
+            guard remote.id == id else { return .gone }
+            let item = FileProviderItem.item(remote)
+            // A nameless row cannot be handed over (`FileProviderItem.isNameable`), and the listing
+            // that would have held it has already left it out.
+            return item.isNameable ? .elsewhere(item) : .gone
+        } catch let error as APIError where error.isNotFound {
+            return .gone
+        } catch {
+            Log.enumeration.debug("could not settle where \(identifier.rawValue, privacy: .public) went: \(error.localizedDescription, privacy: .public)")
+            return .unknown
+        }
+    }
+}
+
 /// Lists one folder of the portal's tree, and answers what has changed in it since a given sync
 /// anchor.
 ///
@@ -102,14 +185,14 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator, PolledContaine
             }
 
             do {
-                let (items, snapshot) = try await currentListing()
-                let (changed, deleted) = SnapshotStore.diff(previous, snapshot, over: items)
-                await SnapshotStore.shared.record(snapshot, for: identity.identifier)
+                let current = try await currentListing()
+                let changes = await Departures.changes(from: previous, to: current, in: identity.logDescription)
+                await SnapshotStore.shared.record(changes.snapshot, for: identity.identifier)
 
-                Log.enumeration.info("changes in \(self.identity.logDescription, privacy: .public) — \(changed.count, privacy: .public) updated, \(deleted.count, privacy: .public) deleted")
-                if !deleted.isEmpty { observer.didDeleteItems(withIdentifiers: deleted) }
-                if !changed.isEmpty { observer.didUpdate(changed) }
-                observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(SnapshotStore.signature(of: snapshot)), moreComing: false)
+                Log.enumeration.info("changes in \(self.identity.logDescription, privacy: .public) — \(changes.updated.count, privacy: .public) updated, \(changes.deleted.count, privacy: .public) deleted")
+                if !changes.deleted.isEmpty { observer.didDeleteItems(withIdentifiers: changes.deleted) }
+                if !changes.updated.isEmpty { observer.didUpdate(changes.updated) }
+                observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(SnapshotStore.signature(of: changes.snapshot)), moreComing: false)
             } catch {
                 Log.enumeration.error("changes in \(self.identity.logDescription, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 observer.finishEnumeratingWithError(FileProviderError.translate(error))
@@ -130,30 +213,13 @@ final class FolderEnumerator: NSObject, NSFileProviderEnumerator, PolledContaine
     /// from. Both come out of one request, so the anchor an enumeration finishes with always
     /// describes exactly the items it just reported.
     func currentListing() async throws -> ([NSFileProviderItem], SnapshotStore.Snapshot) {
-        let listing = try await api.list(identity.destination)
+        contents(of: try await api.list(identity.destination))
+    }
 
-        // Everything a folder in the bin lists is inside a thrown-away subtree, and what may be done
-        // to it says so. Learned once from the folder that was asked for rather than per row: only
-        // the top of what was thrown away carries the mark, so no row down here shows it.
-        let standing: FileProviderItem.Standing = listing.isTrashed ? .covered : .live
+    var polledDestination: Destination? { identity.destination }
 
-        let folders = listing.folders.map {
-            FileProviderItem.folder(
-                in: identity,
-                remote: $0,
-                permissions: $0.permissions ?? Permissions(assumedFrom: $0.writable),
-                standing: standing
-            )
-        }
-        let files = listing.files.map {
-            FileProviderItem.file(
-                in: identity,
-                remote: $0,
-                permissions: $0.permissions ?? listing.assumedForFiles,
-                standing: standing
-            )
-        }
-        return snapshotting(folders + files, in: identity.logDescription)
+    func contents(of listing: Listing) -> ([NSFileProviderItem], SnapshotStore.Snapshot) {
+        snapshotting(FileProviderItem.contents(of: listing, in: identity), in: identity.logDescription)
     }
 }
 
@@ -236,24 +302,29 @@ final class BinEnumerator: NSObject, NSFileProviderEnumerator, PolledContainer {
             }
 
             do {
-                let (items, snapshot) = try await currentListing()
-                var (changed, deleted) = SnapshotStore.diff(previous, snapshot, over: items)
-                await SnapshotStore.shared.record(snapshot, for: container)
+                let current = try await currentListing()
+                var changes = await Departures.changes(from: previous, to: current, in: describing)
+                // Recorded before the hand-over, unlike the folders' below: the bin has an anchor,
+                // so an enumeration that never completes is asked for again from the old one.
+                await SnapshotStore.shared.record(changes.snapshot, for: container)
 
                 // The trash's own enumerator answers for the bin alone. Only the working set carries
                 // the rest of the volume, because only the working set is asked on the system's own
                 // schedule — the trash is asked while somebody has it open, and the folders these
                 // items belong to are never asked at all.
+                var pending = PendingChanges()
                 if container == .workingSet {
-                    let watched = await poller.pendingChanges()
-                    changed += watched.updated
-                    deleted += watched.deleted
+                    pending = await poller.pendingChanges()
+                    changes.updated += pending.updated
+                    changes.deleted += pending.deleted
                 }
 
-                Log.enumeration.info("\(self.describing, privacy: .public) — \(changed.count, privacy: .public) updated, \(deleted.count, privacy: .public) gone")
-                if !deleted.isEmpty { observer.didDeleteItems(withIdentifiers: deleted) }
-                if !changed.isEmpty { observer.didUpdate(changed) }
-                observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(SnapshotStore.signature(of: snapshot)), moreComing: false)
+                Log.enumeration.info("\(self.describing, privacy: .public) — \(changes.updated.count, privacy: .public) updated, \(changes.deleted.count, privacy: .public) gone")
+                if !changes.deleted.isEmpty { observer.didDeleteItems(withIdentifiers: changes.deleted) }
+                if !changes.updated.isEmpty { observer.didUpdate(changes.updated) }
+                observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(SnapshotStore.signature(of: changes.snapshot)), moreComing: false)
+                // Only once the system has them: see `PendingChanges`.
+                await poller.delivered(pending)
             } catch {
                 Log.enumeration.error("changes in the \(self.describing, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
                 observer.finishEnumeratingWithError(FileProviderError.translate(error))
