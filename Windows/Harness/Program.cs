@@ -64,12 +64,14 @@ try
     mirror.SetOpen(new[] { root, docsDir });
     await Task.Delay(1000);
     Check("a folder shown just after its population is not listed again for it", portal.Log.Count == populated);
+    var batches = portal.Batches;
     await mirror.SyncPass();
     Check("the poll re-lists what is showing, parents first, and nothing else",
         portal.Log.Count == populated + 2
         && portal.Log[populated] == "list /" && portal.Log[populated + 1] == $"list {docs}"
         && File.Exists(Path.Combine(root, "Docs", "a.txt"))
         && File.Exists(Path.Combine(root, "b.txt")));
+    Check("and in one request", portal.Batches == batches + 1);
     mirror.SetOpen(new[] { root });
 
     Check("hydration serves the fake bytes through FETCH_DATA",
@@ -144,6 +146,53 @@ try
     Check("a refresh named by path brings the other one true",
         File.Exists(Path.Combine(docsDir, "not looked at.txt")));
     mirror.SetOpen(Array.Empty<string>());
+
+    // MARK: Pruning what nobody is looking at
+
+    // A populated folder nobody is showing or using is emptied and put back on demand, so that
+    // its next look — by anyone — is a fresh listing rather than a stale one. Three seconds
+    // stands in for the minutes the app waits.
+    Mirror.PruneAfter = TimeSpan.FromSeconds(3);
+    await Task.Delay(Mirror.PruneAfter + TimeSpan.FromSeconds(1));
+
+    // A file somebody has open will not delete, so its folder will not empty — and is put back
+    // whole rather than left half empty: whatever went before the held one is listed straight back.
+    var docsEntries = Directory.GetFileSystemEntries(docsDir).Length;
+    using (File.Open(Path.Combine(docsDir, "a renamed.txt"), FileMode.Open, FileAccess.Read, FileShare.None))
+    {
+        mirror.SetOpen(Array.Empty<string>());
+        await mirror.SyncPass();
+    }
+    Check("a folder with a file held open is not pruned, and is put back whole",
+        Directory.GetFileSystemEntries(docsDir).Length == docsEntries && File.Exists(Path.Combine(docsDir, "a renamed.txt")));
+
+    await Task.Delay(Mirror.PruneAfter + TimeSpan.FromSeconds(1));
+    mirror.SetOpen(new[] { docsDir });
+    await mirror.SyncPass();
+    Check("a folder Explorer is showing is not pruned", Directory.EnumerateFileSystemEntries(docsDir).Any());
+
+    portal.RefuseWrites = true;
+    Run($"echo mine alone> \"{Path.Combine(docsDir, "kept back.txt")}\"");
+    await Task.Delay(Mirror.PruneAfter + TimeSpan.FromSeconds(1));
+    mirror.SetOpen(Array.Empty<string>());
+    await mirror.SyncPass();
+    Check("a folder holding bytes the portal does not have is not pruned",
+        File.Exists(Path.Combine(docsDir, "kept back.txt")) && File.Exists(Path.Combine(docsDir, "a renamed.txt")));
+    portal.RefuseWrites = false;
+    await Sync(docsDir);
+    await Until("and the refresh sends those bytes up", () => portal.FindByName("kept back.txt") is not null);
+
+    portal.AddFile(docs, "arrived while idle.txt", "what a stale folder would never show");
+    await Task.Delay(Mirror.PruneAfter + TimeSpan.FromSeconds(1));
+    mirror.SetOpen(Array.Empty<string>());
+    await mirror.SyncPass();
+    Check("an idle folder is pruned", !Directory.EnumerateFileSystemEntries(docsDir).Any());
+    Look(docsDir);
+    Check("and its next look lists it afresh",
+        File.Exists(Path.Combine(docsDir, "arrived while idle.txt"))
+        && File.Exists(Path.Combine(docsDir, "a renamed.txt"))
+        && File.Exists(Path.Combine(docsDir, "kept back.txt")));
+    Mirror.PruneAfter = TimeSpan.FromDays(1);
 
     // MARK: Disk to portal, from a foreign process
 
@@ -515,6 +564,9 @@ sealed class FakePortal : IRemoteStore
     /// <summary>A slow portal, for tests about what happens while a listing is still in the air.</summary>
     public volatile int ListDelayMs;
 
+    /// <summary>How many batched listings have been asked for, for tests about what goes in one request.</summary>
+    public volatile int Batches;
+
     sealed class NotFoundException : Exception;
     sealed class RefusedException() : Exception("the portal said no");
 
@@ -578,6 +630,19 @@ sealed class FakePortal : IRemoteStore
             _log.Add($"list {folderId ?? "/"}");
             return _nodes.Values.Where(n => n.ParentId == folderId && !n.Trashed).Select(Item).ToList();
         }
+    }
+
+    /// <summary>The batch as the portal does it: the folders in turn, each answered in its own slot — and logged one by one, so the tests count listings the same way whichever route asked.</summary>
+    public async Task<IReadOnlyList<FolderListing>> ListMany(IReadOnlyList<string?> folderIds)
+    {
+        Batches++;
+        var answers = new List<FolderListing>();
+        foreach (var folderId in folderIds)
+        {
+            try { answers.Add(new FolderListing(await List(folderId), null)); }
+            catch (Exception e) { answers.Add(new FolderListing(null, e)); }
+        }
+        return answers;
     }
 
     public Task<Stream> Fetch(string fileId)

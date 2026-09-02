@@ -117,7 +117,7 @@ public sealed class RemoteFolder
     [JsonPropertyName("modifiedDate")] public string? ModifiedDate { get; set; }
 }
 
-public sealed class Listing
+public class Listing
 {
     [JsonPropertyName("folders")] public List<RemoteFolder> Folders { get; set; } = new();
     [JsonPropertyName("files")] public List<RemoteFile> Files { get; set; } = new();
@@ -180,6 +180,22 @@ public sealed class ApiException(int status, string message) : Exception(
 /// because it has two trees: everything is a row and carries an id, except the top, which is what
 /// the empty path means. The server takes either and resolves both to the same directory.
 /// </summary>
+/// <summary>
+/// One slot of a batched listing (<see cref="HelmsleyApi.Listings"/>): the folder's listing, or —
+/// for a folder the portal refused on its own — the status and sentence it was refused with.
+/// </summary>
+public sealed class ListingSlot : Listing
+{
+    [JsonPropertyName("status")] public int? Status { get; set; }
+    [JsonPropertyName("error")] public string? Error { get; set; }
+    [JsonIgnore] public bool Refused => Status is not null;
+}
+
+sealed class ListingsAnswer
+{
+    [JsonPropertyName("listings")] public List<ListingSlot> Listings { get; set; } = new();
+}
+
 public readonly struct Destination
 {
     readonly string? _id;
@@ -203,6 +219,10 @@ public readonly struct Destination
 
     /// <summary>The same, as a query string for the reads. Empty for the root: no <c>item</c> is what the server walks from the top for.</summary>
     public string Query => _id is null ? "" : "?item=" + Uri.EscapeDataString(_id);
+
+    /// <summary>One entry of a batched listing request, naming the folder the way the <c>list</c> query does: by item, or by the empty path for the root.</summary>
+    public Dictionary<string, object?> ListingEntry =>
+        _id is null ? new() { ["path"] = Array.Empty<string>() } : new() { ["item"] = _id };
 
     public override string ToString() => _id ?? "/";
 }
@@ -272,6 +292,26 @@ public sealed class HelmsleyApi
     /// <summary>One directory, named by the id of the folder or — for the top of the tree, which has no id — by nothing.</summary>
     public Task<Listing> List(Destination destination) =>
         Get<Listing>("list" + destination.Query);
+
+    /// <summary>The portal's ceiling on one batched listing.</summary>
+    public const int ListingsPerRequest = 100;
+
+    /// <summary>
+    /// Several folders in one round trip — <c>POST listings</c> — answered in the order asked. A
+    /// folder the portal refuses fails in its own slot rather than failing the round, so a folder
+    /// gone since it was opened costs nobody else their listing. At most
+    /// <see cref="ListingsPerRequest"/> a call, which is the portal's ceiling; the store rounds.
+    /// </summary>
+    public async Task<IReadOnlyList<ListingSlot>> Listings(IReadOnlyList<Destination> destinations)
+    {
+        if (destinations.Count == 0) return Array.Empty<ListingSlot>();
+        if (destinations.Count > ListingsPerRequest)
+            throw new ArgumentException($"At most {ListingsPerRequest} folders a request.", nameof(destinations));
+        var body = new Dictionary<string, object?> { ["folders"] = destinations.Select(d => d.ListingEntry).ToList() };
+        var answer = await Post<ListingsAnswer>("listings", body).ConfigureAwait(false);
+        if (answer.Listings.Count != destinations.Count) throw ApiException.Malformed;
+        return answer.Listings;
+    }
 
     /// <summary>
     /// One row by id — the only lookup that answers for a directory as well as a file, and the

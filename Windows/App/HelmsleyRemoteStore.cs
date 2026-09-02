@@ -17,10 +17,28 @@ public sealed class HelmsleyRemoteStore : IRemoteStore
 {
     readonly HelmsleyApi _api = HelmsleyApi.Shared;
 
-    public async Task<IReadOnlyList<RemoteItem>> List(string? folderId)
-    {
-        var listing = await _api.List(Destination(folderId)).ConfigureAwait(false);
+    public async Task<IReadOnlyList<RemoteItem>> List(string? folderId) =>
+        Items(await _api.List(Destination(folderId)).ConfigureAwait(false));
 
+    /// <summary>In rounds of the portal's ceiling, each round one request; a refused slot becomes the exception <c>List</c> would have thrown for that folder.</summary>
+    public async Task<IReadOnlyList<FolderListing>> ListMany(IReadOnlyList<string?> folderIds)
+    {
+        var answers = new List<FolderListing>(folderIds.Count);
+        for (var start = 0; start < folderIds.Count; start += HelmsleyApi.ListingsPerRequest)
+        {
+            var round = folderIds.Skip(start).Take(HelmsleyApi.ListingsPerRequest).Select(Destination).ToList();
+            foreach (var slot in await _api.Listings(round).ConfigureAwait(false))
+            {
+                answers.Add(slot.Refused
+                    ? new FolderListing(null, new ApiException(slot.Status!.Value, slot.Error ?? ""))
+                    : new FolderListing(Items(slot), null));
+            }
+        }
+        return answers;
+    }
+
+    static IReadOnlyList<RemoteItem> Items(Listing listing)
+    {
         var items = new List<RemoteItem>(listing.Folders.Count + listing.Files.Count);
         foreach (var folder in listing.Folders)
             items.Add(Item(folder));

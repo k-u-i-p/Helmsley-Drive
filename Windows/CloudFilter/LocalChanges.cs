@@ -49,14 +49,15 @@ public static unsafe class LocalChanges
     {
         try
         {
-            Note(info, "close", FullPath(info, info->NormalizedPath));
+            var path = FullPath(info, info->NormalizedPath);
+            Note(info, "close", path);
             if (IsOwnEvent(info) || Mirror is not { } mirror) return;
             if ((parameters->Anonymous.CloseCompletion.Flags
                 & CF_CALLBACK_CLOSE_COMPLETION_FLAGS.CF_CALLBACK_CLOSE_COMPLETION_FLAG_DELETED) != 0) return;
 
             // Off the filter's thread: an upload can run for minutes, and holding the callback would
             // hold every other notification with it. Nothing here is acknowledged, so nothing waits.
-            mirror.Spawn(FullPath(info, info->NormalizedPath), mirror.OnClosed);
+            mirror.Spawn(path, mirror.OnClosed);
         }
         catch (Exception e) { Callbacks.Fell("close-completion", e); }
     }

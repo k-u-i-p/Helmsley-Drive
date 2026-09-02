@@ -210,8 +210,12 @@ public sealed class Mirror : IDisposable
     // from the root: a cost that grew with the admin's history rather than with what they were
     // doing, and one request per folder of it.
 
-    // The folders being shown right now, as last told. Replaced whole on every tell.
+    /// <summary>A folder as the filter names it — the portal's row id, or null for the root — and where it stands on disk.</summary>
+    sealed record Folder(string? Id, string Directory);
+
+    // The folders being shown right now, as last told, and when. Replaced whole on every tell.
     volatile IReadOnlyList<string> _open = Array.Empty<string>();
+    DateTime _toldAt = DateTime.MinValue;
 
     // When each folder was last listed, by whichever route. A folder that becomes open just
     // after its population — which is the ordinary way a folder is first shown — is not listed
@@ -226,14 +230,16 @@ public sealed class Mirror : IDisposable
     /// is all a teller without windows to watch (the harness) can say — and a folder the teller
     /// names is refreshed even if it was showing already, which is how going up and coming back
     /// to a folder another window still shows gets its listing. Refreshes run in the background,
-    /// parents before children, so a rename of the parent has settled the child's path first,
-    /// and a folder listed moments ago is skipped. Folders no longer showing drop out of the poll.
+    /// in one request, parents before children, so a rename of the parent has settled the child's
+    /// path first; a folder listed moments ago is skipped. Folders no longer showing drop out of
+    /// the poll.
     /// </summary>
     public void SetOpen(IEnumerable<string> directories, IEnumerable<string>? navigatedInto = null)
     {
         var was = _open;
         var now = Normalised(directories);
         _open = now;
+        _toldAt = DateTime.UtcNow;
 
         var fresh = now
             .Where(d => !was.Contains(d, StringComparer.OrdinalIgnoreCase))
@@ -249,10 +255,7 @@ public sealed class Mirror : IDisposable
             _listedAt[d] = DateTime.UtcNow;
             Console.WriteLine($"@ {d} (navigated into)");
         }
-        Spawn(fresh[0], async _ =>
-        {
-            foreach (var d in fresh) await Refresh(d).ConfigureAwait(false);
-        });
+        Spawn(fresh[0], _ => RefreshMany(fresh));
     }
 
     List<string> Normalised(IEnumerable<string> directories) => directories
@@ -261,37 +264,124 @@ public sealed class Mirror : IDisposable
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToList();
 
-    /// <summary>The populator's listing, for a folder looked into for the first time: its snapshot from then on, and its latest listing.</summary>
+    /// <summary>The populator's listing, for a folder looked into for the first time — or again, after a prune: its snapshot from then on, and its latest listing.</summary>
     public void NoteListed(string? folderId, string directory, IReadOnlyList<RemoteItem> items)
     {
         _snapshots.Record(folderId, items);
         _listedAt[directory] = DateTime.UtcNow;
+        _pruned.TryRemove(directory, out _);
     }
 
     /// <summary>
-    /// The poll: re-lists the folders that are showing, and only those. One request each. A
-    /// drive mounted with no Explorer window on it has nothing open, and costs nothing.
+    /// The poll: re-lists the folders that are showing, and only those, in one request — then
+    /// prunes what nobody is looking at. A drive mounted with no Explorer window on it has
+    /// nothing open, and costs nothing.
     /// </summary>
     public async Task SyncPass()
     {
-        foreach (var directory in _open.OrderBy(Depth).ToList())
-            await Refresh(directory).ConfigureAwait(false);
+        await RefreshMany(_open).ConfigureAwait(false);
+        await Prune().ConfigureAwait(false);
     }
 
     /// <summary>
     /// One folder, named by path, brought true against one listing: what appeared is created,
     /// what changed version is re-dehydrated, what changed name is renamed, what went is removed,
-    /// and what only this disk holds is uploaded. The root, or a placeholder whose identity says
-    /// which row it is; an ordinary directory wearing a listed name has no identity yet — its
-    /// parent's refresh is what adopts it — so it is left rather than guessed at.
+    /// and what only this disk holds is uploaded.
     /// </summary>
     public async Task Refresh(string directory)
     {
+        if (Resolve(directory) is { } folder) await Refresh(folder.Id, folder.Directory).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Several folders, one round trip: the portal answers them all together (<c>POST
+    /// listings</c>) and each is brought true in turn, parents before children. One folder is
+    /// asked for on its own. This is the poll over what Explorer is showing, and a navigation that
+    /// opened several folders at once.
+    /// </summary>
+    public async Task RefreshMany(IEnumerable<string> directories)
+    {
+        var folders = Normalised(directories).OrderBy(Depth).Select(Resolve).OfType<Folder>().ToList();
+        if (folders.Count == 0) return;
+        if (folders.Count == 1)
+        {
+            await Refresh(folders[0].Id, folders[0].Directory).ConfigureAwait(false);
+            return;
+        }
+
+        var mine = new TaskCompletionSource();
+        // Whichever are not already being refreshed; those are somebody else's, and in hand.
+        var claimed = folders.Where(f => _refreshing.TryAdd(f.Directory, mine.Task)).ToList();
+        try
+        {
+            if (claimed.Count == 0) return;
+            await _pass.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                var due = claimed.Where(f => Directory.Exists(f.Directory) && !_pruned.ContainsKey(f.Directory)).ToList();
+                if (due.Count == 0) return;
+
+                IReadOnlyList<FolderListing> answers;
+                try { answers = await _remote.ListManyLocally(due.Select(f => f.Id).ToList()).ConfigureAwait(false); }
+                catch (Exception e)
+                {
+                    // Transient, and the whole round: every snapshot still describes the last
+                    // listing acted on, so the next round simply has more difference to act on.
+                    Console.Error.WriteLine($"listing {due.Count} folders together failed: {e.Message}");
+                    return;
+                }
+
+                for (var i = 0; i < due.Count; i++)
+                {
+                    var folder = due[i];
+                    if (answers[i].Error is { } error)
+                    {
+                        // Gone is the parent's refresh to act on; anything else is the next round's.
+                        if (!_remote.IsNotFound(error)) Console.Error.WriteLine($"list {folder.Id ?? "/"} failed: {error.Message}");
+                        continue;
+                    }
+                    try
+                    {
+                        await Apply(folder.Id, folder.Directory, answers[i].Items!).ConfigureAwait(false);
+                        _listedAt[folder.Directory] = DateTime.UtcNow;
+                    }
+                    catch (Exception e)
+                    {
+                        // One folder must not cost the round the others.
+                        Console.Error.WriteLine($"refresh of {folder.Directory} failed: {e.Message}");
+                    }
+                }
+            }
+            finally { _pass.Release(); }
+        }
+        finally
+        {
+            foreach (var folder in claimed) _refreshing.TryRemove(folder.Directory, out _);
+            mine.SetResult();
+        }
+    }
+
+    /// <summary>
+    /// A directory as a folder the portal can be asked about: the root, or a placeholder whose
+    /// identity says which row it is. An ordinary directory wearing a listed name has no identity
+    /// yet — its parent's refresh is what adopts it — so it is left rather than guessed at.
+    /// </summary>
+    Folder? Resolve(string directory)
+    {
         directory = Path.TrimEndingDirectorySeparator(Path.GetFullPath(directory));
-        if (PathsEqual(directory, _root)) { await Refresh(null, directory).ConfigureAwait(false); return; }
-        if (!Directory.Exists(directory)) return;
-        if (Placeholders.TryGetState(directory) is { } state) await Refresh(state.Id, directory).ConfigureAwait(false);
-        else Console.Error.WriteLine($"{directory} carries no row identity; a refresh of its parent is what gives it one");
+        if (PathsEqual(directory, _root)) return new Folder(null, directory);
+        if (!Directory.Exists(directory)) return null;
+        try
+        {
+            if (Placeholders.TryGetState(directory) is { } state) return new Folder(state.Id, directory);
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"could not read the identity of {directory} ({e.Message})");
+            return null;
+        }
+        Console.Error.WriteLine($"{directory} carries no row identity; a refresh of its parent is what gives it one");
+        return null;
     }
 
     // Refreshes in flight, by directory. Never two of the same folder at once, and never two
@@ -315,9 +405,10 @@ public sealed class Mirror : IDisposable
             await _pass.WaitAsync().ConfigureAwait(false);
             try
             {
-                // Renamed or removed by a refresh of its parent since it was opened. Explorer
-                // follows the rename, and the next tell names the folder as it is now.
-                if (!Directory.Exists(directory)) return;
+                // Renamed or removed by a refresh of its parent since it was opened — Explorer
+                // follows the rename, and the next tell names the folder as it is now — or
+                // pruned, in which case its next look is what lists it.
+                if (!Directory.Exists(directory) || _pruned.ContainsKey(directory)) return;
                 if (await RefreshFolder(folderId, directory).ConfigureAwait(false) is not null)
                     _listedAt[directory] = DateTime.UtcNow;
             }
@@ -328,6 +419,137 @@ public sealed class Mirror : IDisposable
             _refreshing.TryRemove(directory, out _);
             // Joiners are released whatever happened here; a fault is the asker's to hear.
             mine.SetResult();
+        }
+    }
+
+    // MARK: - Pruning
+    //
+    // A populated folder nobody is looking at is a stale one: the filter never asks about it
+    // again, the poll covers only what Explorer shows, and a script reading it directly sees it
+    // as it was last listed, however long ago. So a folder idle for long enough is emptied and
+    // put back on demand, and its next look — Explorer's, a script's, anyone's — is a population,
+    // which is a fresh listing. Direct access is then at most PruneAfter stale, and the tree on
+    // disk stays the size of what is being used.
+    //
+    // What is never pruned: the root, which is no placeholder; anything Explorer shows, and its
+    // ancestors, which the navigation pane holds; and anything holding bytes the portal does not
+    // have — a local create, an unsynced save — or a file pinned to stay on this device. A file
+    // somebody has open protects its folder by the handle: the delete fails on it, and the folder
+    // is listed again at once to put back what went rather than left half empty. Not by recency
+    // of use — that was tried, and the indexer and the antimalware scan open and close every
+    // fresh file, which made a folder they had just been through look like one in use. What this
+    // cannot see is a folder open in another program's Open or Save dialog without a file open.
+
+    public static TimeSpan PruneAfter { get; set; } = TimeSpan.FromMinutes(5);
+
+    // How long a tell of what is showing is trusted. A watcher that has gone quiet cannot say
+    // what Explorer has open, and a prune on its last word would empty folders out from under
+    // windows it can no longer see.
+    static readonly TimeSpan TellPatience = TimeSpan.FromSeconds(10);
+
+    readonly DateTime _started = DateTime.UtcNow;
+
+    // Emptied and on demand, awaiting a look. A refresh must not run on one: entries created
+    // into an on-demand directory are the callback storm PORTING.md describes.
+    readonly ConcurrentDictionary<string, byte> _pruned = new(StringComparer.OrdinalIgnoreCase);
+
+    async Task Prune()
+    {
+        if (DateTime.UtcNow - _toldAt > TellPatience) return;
+        await _pass.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            var due = new List<string>();
+            Consider(_root, due, isRoot: true);
+            foreach (var directory in due) await PruneOne(directory).ConfigureAwait(false);
+        }
+        finally { _pass.Release(); }
+    }
+
+    /// <summary>
+    /// Whether this whole subtree may go. If it may, the parent decides; if it may not, whichever
+    /// of its children may go on their own are put on the list. An unpopulated directory
+    /// enumerates empty to this process, so the walk stays inside what is populated — which,
+    /// once pruning has settled, is what is being used.
+    /// </summary>
+    bool Consider(string directory, List<string> due, bool isRoot = false)
+    {
+        List<string> subdirectories;
+        try { subdirectories = Directory.EnumerateDirectories(directory).ToList(); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return false; }
+
+        var wholly = new List<string>();
+        var allChildren = true;
+        foreach (var subdirectory in subdirectories)
+        {
+            if (Consider(subdirectory, due)) wholly.Add(subdirectory);
+            else allChildren = false;
+        }
+        if (!isRoot && allChildren && Prunable(directory)) return true;
+        due.AddRange(wholly);
+        return false;
+    }
+
+    bool Prunable(string directory) =>
+        !_pruned.ContainsKey(directory) && !Shown(directory) && Idle(directory) && !HoldsAnythingToKeep(directory);
+
+    bool Shown(string directory) => _open.Any(open =>
+        PathsEqual(open, directory)
+        || open.StartsWith(directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase));
+
+    bool Idle(string directory)
+    {
+        var last = _started;
+        if (_listedAt.TryGetValue(directory, out var listed) && listed > last) last = listed;
+        return DateTime.UtcNow - last >= PruneAfter;
+    }
+
+    /// <summary>Bytes the portal does not have, a file the user pinned, or a file whose state cannot be read: any of them keeps the folder.</summary>
+    static bool HoldsAnythingToKeep(string directory)
+    {
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(directory))
+            {
+                if (LocalNames.IsTransient(Path.GetFileName(file))) continue;
+                PlaceholderState? state;
+                try { state = Placeholders.TryGetState(file); }
+                catch (Exception) { return true; }
+                if (state is null || state.DataDirty || state.Pinned) return true;
+            }
+            return false;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return true; }
+    }
+
+    async Task PruneOne(string directory)
+    {
+        string? id;
+        try { id = Placeholders.TryGetState(directory)?.Id; }
+        catch (Exception) { return; }
+        // No row: the parent's refresh has not adopted it yet, and nothing could list it afresh.
+        if (id is null) return;
+
+        var removed = 0;
+        try
+        {
+            foreach (var entry in Directory.EnumerateFileSystemEntries(directory).ToList())
+            {
+                if (Directory.Exists(entry)) Directory.Delete(entry, recursive: true);
+                else File.Delete(entry);
+                removed++;
+            }
+            _snapshots.Forget(id);
+            Placeholders.EnableOnDemand(directory);
+            _pruned[directory] = 0;
+            _listedAt.TryRemove(directory, out _);
+            Console.WriteLine($"~ {directory} pruned ({removed} entries); its next look lists it afresh");
+        }
+        catch (Exception e)
+        {
+            // Half empty is the one state it must not be left in. The listing puts back what went.
+            Console.Error.WriteLine($"could not prune {directory} ({e.Message}); listing it again to put back what went");
+            await RefreshFolder(id, directory).ConfigureAwait(false);
         }
     }
 
@@ -351,7 +573,12 @@ public sealed class Mirror : IDisposable
             Console.Error.WriteLine($"list {folderId ?? "/"} failed: {e.Message}");
             return null;
         }
+        return await Apply(folderId, directory, listing).ConfigureAwait(false);
+    }
 
+    /// <summary>One listing brought onto one directory; answers the listing, which is what the caller records as listed.</summary>
+    async Task<IReadOnlyList<RemoteItem>> Apply(string? folderId, string directory, IReadOnlyList<RemoteItem> listing)
+    {
         var previous = _snapshots.Current(folderId);
         var current = new Dictionary<string, RemoteItem>();
         foreach (var item in listing) current[item.Id] = item;

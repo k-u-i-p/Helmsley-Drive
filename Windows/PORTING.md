@@ -356,7 +356,30 @@ next person believes the code.
   this re-listed every folder ever opened, breadth-first from the root, on every tick — one request
   per folder of the admin's whole history, which does not scale. The portal answers for what is on
   screen, and for no other folder. What the shell does not show — a folder open in another program's
-  Open or Save dialog — gets its population and then waits for Explorer.
+  Open or Save dialog — gets its population and then waits for Explorer, or for a prune.
+
+- **The poll is one request, however many folders are showing.** The portal's `POST
+  /api/files/listings` (added 2026-09-02) answers up to a hundred folders in one round trip, each in
+  its own slot, a refused folder failing only its slot. `IRemoteStore.ListMany` carries it across the
+  seam and `Mirror.RefreshMany` applies the answers parents first; one folder is still asked for on
+  its own with `GET list`. The Mac's `ChangePoller` asks the same way for its watched folders.
+
+- **What nobody is looking at is pruned, so its next look is fresh.** Decided (Ben, 2026-09-02),
+  because a populated folder nobody is showing was stale for good: the filter never asks about it
+  again, and a script reading it directly saw it as it was last listed. Every poll, `Mirror.Prune`
+  empties a folder that has been idle for `PruneAfter` (five minutes) — not shown by Explorer,
+  listed no more recently than that — and puts it back on
+  demand (`Placeholders.EnableOnDemand`, on an *empty* directory, which is the one state on-demand
+  is safe in), so the next enumeration or name lookup by anyone populates it afresh. Never pruned:
+  the root; anything Explorer shows and its ancestors; anything holding a local-only file, an
+  unsynced save, or a pinned file; and nothing at all unless `ExplorerWatch` has spoken within ten
+  seconds, since a quiet watcher cannot say what Explorer has open. A folder that will not empty
+  (a handle held on something in it) is listed again at once, so it is never left half empty; that
+  handle is the whole of how an open file protects its folder. Recency of use was tried as a
+  criterion and dropped the same day: the indexer and the antimalware scan open and close every
+  fresh file, and a folder they had just been through looked like one somebody was using.
+  The engine's own deletes go through the same callbacks as the user's and are told apart by
+  process id, which is what keeps a prune from binning anything on the portal.
 
 - **The fully-populated mark is conditional, and it is permanent — and it is not optional.**
   `DISABLE_ON_DEMAND_POPULATION` is honoured only if every placeholder in that transfer was created,

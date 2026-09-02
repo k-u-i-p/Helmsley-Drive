@@ -10,7 +10,7 @@ namespace HelmsleyDrive.CloudFilter;
 /// is not a verdict — the platform clears it for a rename as readily as for a write — so whether
 /// the *bytes* differ is carried separately, and only the two together mean a save to upload.
 /// </summary>
-public sealed record PlaceholderState(string Id, bool InSync, bool HasModifiedBytes)
+public sealed record PlaceholderState(string Id, bool InSync, bool HasModifiedBytes, bool Pinned = false)
 {
     /// <summary>Local bytes the portal has not seen. The one state that means an upload.</summary>
     public bool DataDirty => HasModifiedBytes && !InSync;
@@ -218,6 +218,31 @@ public static unsafe class Placeholders
         }
     });
 
+    /// <summary>
+    /// Puts an emptied directory back on demand, so the filter asks the populator the next time
+    /// anything looks inside it — which is what a prune (<see cref="Mirror"/>) turns a stale folder
+    /// into. Only ever for a directory holding nothing: one with entries left on demand makes the
+    /// provider the authority for every name lookup under it, which PORTING.md records the cost of.
+    /// Answers false for a directory that is no placeholder, and leaves it alone.
+    /// </summary>
+    public static bool EnableOnDemand(string directory)
+    {
+        try
+        {
+            SharingRetries(() =>
+            {
+                using var handle = ProtectedHandle.Open(directory, CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_WRITE_ACCESS);
+                PInvoke.CfUpdatePlaceholder(handle.Win32Handle, null, null, 0, null, 0,
+                    CF_UPDATE_FLAGS.CF_UPDATE_FLAG_ENABLE_ON_DEMAND_POPULATION, null).ThrowOnFailure();
+            });
+            return true;
+        }
+        catch (COMException e) when (e.HResult == ERROR_NOT_A_CLOUD_FILE)
+        {
+            return false;
+        }
+    }
+
     /// <summary>What a completed upload of local bytes earns the placeholder that held them.</summary>
     public static void MarkInSync(string path) => SharingRetries(() =>
     {
@@ -264,13 +289,16 @@ public static unsafe class Placeholders
         if (returned < 60) throw new InvalidDataException("The placeholder's standard info came back short.");
 
         var modified = *(long*)(buffer + 16);
+        // "Always keep on this device", which the user asked for and a prune must honour.
+        // CF_PIN_STATE_PINNED is 1 in cfapi.h; the enum itself is not among what CsWin32 projects.
+        var pinned = *(int*)(buffer + 32) == 1;
         var inSync = *(int*)(buffer + 36) == (int)CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC;
         // Clamped against what was actually written rather than trusted: the length is a field
         // inside the buffer being described, and reading past the buffer on its word is how a
         // stack read becomes a row id sent to the portal.
         var identityLength = Math.Min(*(uint*)(buffer + 56), returned - 60);
         var id = new string((char*)(buffer + 60), 0, (int)(identityLength / sizeof(char)));
-        return new PlaceholderState(id, inSync, modified > 0);
+        return new PlaceholderState(id, inSync, modified > 0, pinned);
     }
 
     /// <summary>

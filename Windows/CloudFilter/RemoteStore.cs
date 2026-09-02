@@ -14,6 +14,9 @@ namespace HelmsleyDrive.CloudFilter;
 public sealed record RemoteItem(
     string Id, string Name, bool IsFolder, long Size, DateTimeOffset Created, DateTimeOffset Modified, string Version);
 
+/// <summary>One folder's answer within a batch: its items, or the error that folder alone was refused with.</summary>
+public sealed record FolderListing(IReadOnlyList<RemoteItem>? Items, Exception? Error);
+
 /// <summary>
 /// The slice of the portal the engine needs, a port of Mac/Shared/HelmsleyAPI.swift — list a
 /// folder, follow the 302 into the bucket for bytes, and the writes the local callbacks map onto.
@@ -22,6 +25,14 @@ public interface IRemoteStore
 {
     /// <param name="folderId">A row id, or null for the root of the tree.</param>
     Task<IReadOnlyList<RemoteItem>> List(string? folderId);
+
+    /// <summary>
+    /// Several folders in one round trip, answered in the order asked: each slot the folder's
+    /// items, or the error that folder alone was refused with — <see cref="IsNotFound"/> tells a
+    /// folder that has gone from one that merely did not answer. The call itself fails only when
+    /// the round did.
+    /// </summary>
+    Task<IReadOnlyList<FolderListing>> ListMany(IReadOnlyList<string?> folderIds);
 
     /// <summary>
     /// The file's bytes, as a stream the caller owns and disposes. A stream rather than an array
@@ -84,4 +95,10 @@ public static class RemoteStoreExtensions
 {
     public static async Task<IReadOnlyList<RemoteItem>> ListLocally(this IRemoteStore store, string? folderId) =>
         LocalNames.Legalise(await store.List(folderId).ConfigureAwait(false));
+
+    public static async Task<IReadOnlyList<FolderListing>> ListManyLocally(this IRemoteStore store, IReadOnlyList<string?> folderIds)
+    {
+        var answers = await store.ListMany(folderIds).ConfigureAwait(false);
+        return answers.Select(a => a.Items is null ? a : a with { Items = LocalNames.Legalise(a.Items) }).ToList();
+    }
 }

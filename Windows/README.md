@@ -96,7 +96,7 @@ one launched says so instead.
 `Packaging/package.ps1` takes a checkout to an installer:
 
 ```
-.\Packaging\package.ps1 -Version 0.4.1 -Runtime win-x64, win-arm64
+.\Packaging\package.ps1 -Version 0.5.0 -Runtime win-x64, win-arm64
 ```
 
 It publishes through `App/Properties/PublishProfiles/`, then compiles `Packaging/HelmsleyDrive.iss`
@@ -143,7 +143,7 @@ packaged installer is an expensive way to discover the engine is broken. Then th
 needs two things said exactly right:
 
 ```
-ssh helmsley-vm 'powershell -NoProfile -ExecutionPolicy Bypass -Command "& C:\Users\Ben\Helmsley-Drive\Windows\Packaging\package.ps1 -Version 0.4.1 -Runtime win-x64,win-arm64"'
+ssh helmsley-vm 'powershell -NoProfile -ExecutionPolicy Bypass -Command "& C:\Users\Ben\Helmsley-Drive\Windows\Packaging\package.ps1 -Version 0.5.0 -Runtime win-x64,win-arm64"'
 ```
 
 The VM refuses to run an unsigned `.ps1` — calling the script directly fails with "running scripts
@@ -157,7 +157,7 @@ Both installers land in `dist\` at the repo root — gitignored, because a teste
 release and never from a checkout — and come back with:
 
 ```
-scp 'helmsley-vm:C:/Users/Ben/Helmsley-Drive/dist/HelmsleyDrive-0.4.1-*.exe' Windows/dist/
+scp 'helmsley-vm:C:/Users/Ben/Helmsley-Drive/dist/HelmsleyDrive-0.5.0-*.exe' Windows/dist/
 ```
 
 Worth a `shasum -a 256` against the VM's `Get-FileHash` afterwards; a truncated 260 MB copy looks
