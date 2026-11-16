@@ -12,7 +12,7 @@ enum Configuration {
 
     /// Where the portal lives. Fixed at build time: a shipped app talks to the portal and nothing
     /// else, so there is no address for anyone to get wrong.
-    static let baseURL = URL(string: "https://helmsley-clients.co.uk")!
+    static let baseURL = URL(string: "https://helmsley.co.uk")!
 
     /// The OAuth client this app is registered as, matching `oauth.clients[].clientId` in the
     /// portal's config.json. A public client: it ships to laptops, so it holds no secret, and PKCE

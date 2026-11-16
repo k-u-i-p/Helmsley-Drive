@@ -45,7 +45,7 @@ concurrency model differs and so does the HTTP client — but every decision in 
 this portal and is worth keeping.
 
 **1. `Mac/Shared/Configuration.swift` → a `Configuration` class.** Mostly a shrink. The portal
-address (`https://helmsley-clients.co.uk`), the OAuth client id (`helmsley-drive`) and the scope
+address (`https://helmsley.co.uk`), the OAuth client id (`helmsley-drive`) and the scope
 (`drive`) carry over unchanged. Everything about keychain access groups and app groups does not: there
 is no extension process on Windows, so the two-process sharing problem the Mac side solves simply
 does not arise here.

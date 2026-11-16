@@ -392,7 +392,7 @@ of which any cookie would ever present again.
 "mcp": {
   "clientId": "helmsley-mcp",
   "redirectUris": ["https://claude.ai/api/mcp/auth_callback", "https://claude.com/api/mcp/auth_callback"],
-  "issuerUrl": "https://helmsley-clients.co.uk",
+  "issuerUrl": "https://helmsley.co.uk",
   "clients": [
     { "clientId": "helmsley-drive", "redirectUris": ["helmsley-drive://oauth/callback"] }
   ]

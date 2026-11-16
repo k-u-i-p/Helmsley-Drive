@@ -11,7 +11,7 @@ public static class Configuration
     /// Where the portal lives. Fixed at build time: a shipped app talks to the portal and nothing
     /// else, so there is no address for anyone to get wrong.
     /// </summary>
-    public static readonly Uri BaseUri = new("https://helmsley-clients.co.uk");
+    public static readonly Uri BaseUri = new("https://helmsley.co.uk");
 
     /// <summary>
     /// The OAuth client this app is registered as, matching <c>oauth.clients[].clientId</c> in the
