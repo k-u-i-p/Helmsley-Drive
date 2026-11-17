@@ -207,27 +207,30 @@ cldapi-only registration automatically.
 
 ## The dev VM
 
-A Windows 11 ARM64 guest under VMware Fusion on Ben's Mac, hostname `Helmsley`. It has the .NET 8
-and 9 SDKs, Visual Studio 2022 Community, and Git.
+A Windows 11 Home ARM64 guest under VMware Fusion on Ben's Mac, hostname `vm`, Windows user
+`helms`. It has the .NET 8 SDK, Git and Inno Setup 6, and nothing else: no Visual Studio, because
+`dotnet` builds, runs and publishes everything here. This is the second one — the first went with
+the Mac it lived on, and "Making another" below is what replacing it took.
 
 ```
 ssh helmsley-vm
 ```
 
-That alias is in `~/.ssh/config` on the Mac and resolves to `ben@192.168.2.128` with the key at
+That alias is in `~/.ssh/config` on the Mac and resolves to `helms@192.168.2.128` with the key at
 `~/.ssh/helmsley-winvm`. Key auth as an administrator; the default shell is PowerShell, so remote
 commands are PowerShell, not cmd. If the address has moved, the current lease is in
-`/var/db/vmware/vmnet-dhcpd-vmnet8.leases` on the Mac. `vmrun` is not useful — the VM is encrypted
-and every command wants its password.
+`/var/db/vmware/vmnet-dhcpd-vmnet8.leases` on the Mac. The VM does not answer ping — Windows'
+firewall drops it — so an address that looks dead to `ping` is tested with `nc -z <address> 22`
+instead. `vmrun` is not useful — the VM is encrypted and every command wants its password.
 
 The Mac checkout is the source of truth and the VM has a clone of it at
-`C:\Users\Ben\Helmsley-Drive`, kept up to date by pushing over SSH:
+`C:\Users\helms\Helmsley-Drive`, kept up to date by pushing over SSH:
 
 ```
 git push vm main
 ```
 
-The `vm` remote is `helmsley-vm:C:/Users/Ben/Helmsley-Drive`, and that clone is configured
+The `vm` remote is `helmsley-vm:C:/Users/helms/Helmsley-Drive`, and that clone is configured
 `receive.denyCurrentBranch = updateInstead`, so a push updates its working tree in place — there is
 no pull step and nothing to run in the VM afterwards. It refuses the push rather than clobbering
 anything if the VM's tree has uncommitted changes, which is the right failure: edit on the Mac, and
@@ -238,7 +241,7 @@ It is the whole repository, not just `Windows/`, so `Mac/Shared/*.swift` can be 
 Then build:
 
 ```
-ssh helmsley-vm 'cd C:\Users\Ben\Helmsley-Drive\Windows; dotnet build'
+ssh helmsley-vm 'cd C:\Users\helms\Helmsley-Drive\Windows; dotnet build'
 ```
 
 `HelmsleyDrive.sln` is committed, so nothing needs generating first.
@@ -280,6 +283,63 @@ exactly like a layout bug and is not one. The app forces
 `RenderOptions.ProcessRenderMode = SoftwareOnly` for everyone: a status window this size has no
 rendering load, and a real machine with a driver in the same mood would otherwise show the same
 white sheet.
+
+### Making another
+
+Done once more, on 2026-11-16, when the Mac changed and the VM did not come with it. Fusion is a
+download from Broadcom (Homebrew no longer carries it). Windows 11 wants a TPM, which is why the VM
+is encrypted.
+
+Nothing can be done over SSH before there is SSH, so the first part is an elevated PowerShell on
+the VM's own desktop:
+
+- the OpenSSH server (`Add-WindowsCapability -Online -Name 'OpenSSH.Server*'`), with `sshd` set to
+  start automatically and started;
+- the `OpenSSH-Server-In-TCP` firewall rule set to every profile — a fresh VM's NAT network is
+  usually classed Public, and a rule that covers only Private looks exactly like SSH not running;
+- the Mac's public key (`~/.ssh/helmsley-winvm.pub`) in
+  `C:\ProgramData\ssh\administrators_authorized_keys`, with `icacls` cutting that file down to
+  Administrators and SYSTEM. An administrator's own `.ssh\authorized_keys` is never read, and sshd
+  ignores the shared file while anyone else can touch it;
+- PowerShell as the SSH shell: `DefaultShell` under `HKLM:\SOFTWARE\OpenSSH`;
+- `winget install` of `Git.Git`, `JRSoftware.InnoSetup` and `Microsoft.DotNet.SDK.8`.
+
+The SDK did not arrive from that run, and why was never found; the same `winget install` over a
+held-open SSH session put it in. `dotnet --list-sdks` is the thing to believe, not the script.
+
+The user SSH wants is whatever Windows made of the account at setup — `helms` here, chosen by
+nobody. `whoami` on the VM's desktop says it, and so does sshd's own log
+(`Get-WinEvent -LogName OpenSSH/Operational`), which answers every wrong guess with "Invalid user".
+
+Then, from the Mac, the `Host helmsley-vm` entry in `~/.ssh/config`, an empty repository for the
+push to land in, and the push:
+
+```
+ssh helmsley-vm 'git init -b main C:\Users\helms\Helmsley-Drive; git -C C:\Users\helms\Helmsley-Drive config receive.denyCurrentBranch updateInstead'
+git remote set-url vm helmsley-vm:C:/Users/helms/Helmsley-Drive
+git push vm main
+```
+
+Two things cost an evening between them, and neither was the VM's fault.
+
+A fresh Windows spends its first hours downloading updates — a gigabyte and a half here — and on
+a slow connection that starves everything else. `dotnet build` and the harness got through; the
+packaging did not, because a self-contained publish pulls the runtime packs for both architectures
+(`Microsoft.NETCore.App.Runtime` and `Microsoft.WindowsDesktop.App.Runtime` for `win-x64` and
+`win-arm64`, about 35 MB each, and a Crossgen2 pack) and NuGet starts a stalled download again from
+nothing. It fails as "No such host is known", a timeout, or "Central Directory corrupt", depending
+on where the stall fell. Waiting for Windows Update is one answer. The other is to fetch the
+`.nupkg` files from `api.nuget.org/v3-flatcontainer` with `curl.exe -C -`, which resumes, into a
+folder, and name that folder in the `RestoreAdditionalProjectSources` environment variable for the
+one packaging run — MSBuild reads it from the environment, so nothing is configured anywhere. Once
+restored they are in the VM's NuGet cache and the question does not come up again until the runtime
+version moves.
+
+And a `git push vm main` that sits at "Enumerating objects" is the Mac, not the VM. The checkout
+lives in `~/Documents`, which iCloud syncs, and after a move to a new Mac most of `.git` was there
+in name only — each object fetched from iCloud as git asked for it.
+`ls -lOR .git | grep -c dataless` counts them, and reading every file once
+(`find .git -type f -print0 | xargs -0 cat > /dev/null`) brings them down.
 
 ## What the filter actually tells you
 

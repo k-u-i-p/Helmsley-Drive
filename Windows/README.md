@@ -142,8 +142,8 @@ Then, in an SSH session held open for the duration — Windows kills SSH child p
 disconnect, and two self-contained publishes are minutes, not seconds:
 
 ```
-ssh helmsley-vm 'cd C:\Users\Ben\Helmsley-Drive\Windows; dotnet build'
-ssh helmsley-vm 'cd C:\Users\Ben\Helmsley-Drive\Windows; dotnet run --project Harness'
+ssh helmsley-vm 'cd C:\Users\helms\Helmsley-Drive\Windows; dotnet build'
+ssh helmsley-vm 'cd C:\Users\helms\Helmsley-Drive\Windows; dotnet run --project Harness'
 ```
 
 Build and harness first, always: the harness is the only thing that drives the real filter, and a
@@ -151,7 +151,7 @@ packaged installer is an expensive way to discover the engine is broken. Then th
 needs two things said exactly right:
 
 ```
-ssh helmsley-vm 'powershell -NoProfile -ExecutionPolicy Bypass -Command "& C:\Users\Ben\Helmsley-Drive\Windows\Packaging\package.ps1 -Version 0.5.1 -Runtime win-x64,win-arm64"'
+ssh helmsley-vm 'powershell -NoProfile -ExecutionPolicy Bypass -Command "& C:\Users\helms\Helmsley-Drive\Windows\Packaging\package.ps1 -Version 0.5.1 -Runtime win-x64,win-arm64"'
 ```
 
 The VM refuses to run an unsigned `.ps1` — calling the script directly fails with "running scripts
@@ -165,7 +165,7 @@ Both installers land in `dist\` at the repo root — gitignored, because a teste
 release and never from a checkout — and come back with:
 
 ```
-scp 'helmsley-vm:C:/Users/Ben/Helmsley-Drive/dist/HelmsleyDrive-0.5.1-*.exe' Windows/dist/
+scp 'helmsley-vm:C:/Users/helms/Helmsley-Drive/dist/HelmsleyDrive-0.5.1-*.exe' Windows/dist/
 ```
 
 Worth a `shasum -a 256` against the VM's `Get-FileHash` afterwards; a truncated 260 MB copy looks
